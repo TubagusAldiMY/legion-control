@@ -56,9 +56,9 @@ sudo udevadm trigger --action=add --subsystem-match=hwmon
 Verifikasi izin (semua harus `-rw-rw-r-- root plugdev`):
 ```bash
 H=$(grep -l legion_hwmon /sys/class/hwmon/hwmon*/name | xargs dirname)
-ls -l $H/pwm1_auto_point1_pwm /sys/module/legion_laptop/drivers/platform:legion/*/{powermode,gsync}
+ls -l $H/pwm1_auto_point1_pwm /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/{powermode,gsync}
 ```
-**Cek konsistensi Hybrid Mode sekali setelah modul terpasang.** Saat ini hanya NVIDIA yang terlihat di `lspci` (iGPU disembunyikan = mode dGPU-only), jadi `cat /sys/module/legion_laptop/drivers/platform:legion/*/gsync` seharusnya `0`. Bila hasilnya `1`, arti nilainya terbalik di model ini: jangan pakai tombol Hybrid dan laporkan.
+**Cek konsistensi Hybrid Mode sekali setelah modul terpasang.** Saat ini hanya NVIDIA yang terlihat di `lspci` (iGPU disembunyikan = mode dGPU-only), jadi `cat /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/gsync` (kernel ≥7.0: folder `legion`) seharusnya `0`. Bila hasilnya `1`, arti nilainya terbalik di model ini: jangan pakai tombol Hybrid dan laporkan.
 
 ### Tray icon (GNOME)
 GNOME tidak punya tray bawaan. Tanpa ekstensi, aplikasi tetap jalan sebagai jendela biasa (tombol X = keluar).

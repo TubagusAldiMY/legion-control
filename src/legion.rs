@@ -129,9 +129,11 @@ impl Legion {
         fs::write(self.sys.join("powermode"), mode.to_string())
     }
 
-    /// Apakah firmware mendukung Hybrid Mode (file `issupportgsync`).
+    /// Apakah firmware mendukung Hybrid Mode (file `issupportgsync`). Nilai 0 = tidak;
+    /// selain itu = ya. Legion 5 15ACH6 (82JW) melaporkan `2`, bukan `1`, jadi
+    /// membandingkan dengan "1" salah menganggap fitur tidak didukung.
     pub fn gsync_supported(&self) -> bool {
-        Self::read(&self.sys, "issupportgsync").map(|v| v == "1").unwrap_or(false)
+        Self::read_num(&self.sys, "issupportgsync").is_some_and(|v| v != 0)
     }
 
     /// `true` = Hybrid Mode aktif (iGPU + dGPU); `false` = hanya dGPU. Berlaku setelah restart.
@@ -286,6 +288,11 @@ pub(crate) mod tests {
         assert!(!l.gsync().unwrap());
         l.set_gsync(true).unwrap();
         assert!(l.gsync().unwrap());
+        // Regression: firmware nyata melaporkan 2 untuk "didukung"; 0 = tidak didukung.
+        for (val, want) in [("2\n", true), ("0\n", false)] {
+            fs::write(root.join("sys/issupportgsync"), val).unwrap();
+            assert_eq!(l.gsync_supported(), want, "issupportgsync={val:?}");
+        }
         fs::remove_file(root.join("sys/issupportgsync")).unwrap();
         assert!(!l.gsync_supported(), "file hilang = tidak didukung, bukan panic");
         fs::remove_dir_all(root).ok();
@@ -308,6 +315,21 @@ pub(crate) mod tests {
         for (name, pts, ok) in cases {
             assert_eq!(validate_curve(&pts, base).is_ok(), ok, "{name}");
         }
+    }
+
+    /// Smoke di hardware asli (hanya membaca): jalankan dengan `cargo test -- --ignored`
+    /// setelah modul terpasang.
+    #[test]
+    #[ignore = "butuh modul legion_laptop terpasang"]
+    fn real_hardware_smoke() {
+        let l = Legion::detect().expect("modul legion_laptop tidak terdeteksi");
+        let c = l.curve().expect("fan curve tidak terbaca");
+        assert!(c.len() >= 2, "kurva terlalu pendek: {c:?}");
+        assert!(l.sensors().cpu_c.is_some_and(|t| (10..120).contains(&t)), "suhu CPU tak wajar");
+        assert!(l.powermode().is_ok());
+        assert!(l.gsync_supported(), "gsync seharusnya didukung di 82JW");
+        l.gsync().expect("gsync tidak terbaca");
+        println!("curve={c:?} mode={:?} gsync={:?} sensors={:?}", l.powermode(), l.gsync(), l.sensors());
     }
 
     /// Sanity: GPU terdeteksi dari sysfs PCI palsu; non-display diabaikan.
