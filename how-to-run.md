@@ -137,6 +137,7 @@ Perintah `scripts/install.sh` tidak memakai sudo; aturan udev tetap dipasang man
 | Kipas penuh nonaktif / kembali 0 | Pilih mode **Custom** dulu (halaman Kipas & suhu) |
 | Daya & panas: "Gagal mengubah turbo boost ... Permission denied" | Aturan udev belum dipasang ulang (bagian Daya & panas) |
 | Kurva tidak bertahan setelah Fn+Q | Aktifkan "Pertahankan kurva ini" dan kembali ke mode tempat kurva disimpan; aplikasi harus berjalan |
+| Kurva di Balanced: Terapkan terkunci / titik terakhir 0 | Versi lama mengira 10 titik; Balanced hanya 9 (`auto_points_size`). Perbarui ke versi terbaru |
 | Tombol Terapkan nonaktif | Kurva tidak lolos validasi (kecepatan turun saat suhu naik, atau titik terakhir <60% default); pesan merah menjelaskan |
 | Ikon tray tidak muncul di GNOME | Ekstensi AppIndicator belum terpasang/aktif, lihat bagian Tray icon |
 | Autostart tidak jalan setelah binary dipindah | Matikan lalu nyalakan lagi centang autostart agar path diperbarui |

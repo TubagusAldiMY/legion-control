@@ -86,15 +86,20 @@ impl Legion {
         }
     }
 
-    /// Baca fan curve dari firmware. Jumlah titik ditentukan oleh banyaknya file
-    /// `pwm1_auto_pointN_pwm` (bervariasi antar model), bukan angka tetap.
+    /// Jumlah titik kurva yang SEBENARNYA dipakai mode daya sekarang. File `pwmY_auto_pointN_*`
+    /// selalu ada 10 buah, tetapi tiap mode punya ukuran sendiri (Performance 10, Balanced 9, ...);
+    /// entri di luar ukuran itu hanya bayangan yang terbaca 0 dan menolak/mengacaukan penulisan.
+    /// Atribut `auto_points_size` yang menyatakannya; bila tidak ada, hitung dari jumlah file.
+    pub fn points_size(&self) -> usize {
+        let files = (1..).take_while(|n| self.hwmon.join(format!("pwm1_auto_point{n}_pwm")).exists()).count();
+        Self::read_num(&self.hwmon, "auto_points_size").and_then(|n| usize::try_from(n).ok()).filter(|n| (1..=files).contains(n)).unwrap_or(files)
+    }
+
+    /// Baca fan curve dari firmware (sebanyak [`Legion::points_size`] titik).
     pub fn curve(&self) -> io::Result<Vec<Point>> {
         let mut pts = vec![];
-        for n in 1.. {
+        for n in 1..=self.points_size() {
             let name1 = format!("pwm1_auto_point{n}_pwm");
-            if !self.hwmon.join(&name1).exists() {
-                break;
-            }
             let get = |name: &str| -> io::Result<u8> {
                 Self::read(&self.hwmon, name)?
                     .parse::<u8>()
@@ -112,8 +117,7 @@ impl Legion {
     /// batas bawah di `pwm1_auto_pointN_temp_hyst` dan batas atas di `pwm1_auto_pointN_temp`
     /// (diamati di hardware: 73 dan 84 untuk titik 8); 127 berarti tanpa batas atas.
     pub fn cpu_ranges(&self) -> Vec<Option<(u8, u8)>> {
-        (1..)
-            .take_while(|n| self.hwmon.join(format!("pwm1_auto_point{n}_pwm")).exists())
+        (1..=self.points_size())
             .map(|n| {
                 let get = |suffix: &str| Self::read_num(&self.hwmon, &format!("pwm1_auto_point{n}_{suffix}")).and_then(|v| u8::try_from(v).ok());
                 Some((get("temp_hyst")?, get("temp")?))
@@ -301,6 +305,10 @@ pub(crate) mod tests {
             fs::write(h.join(format!("pwm1_auto_point{n}_pwm")), format!("{a}\n")).unwrap();
             fs::write(h.join(format!("pwm2_auto_point{n}_pwm")), format!("{b}\n")).unwrap();
         }
+        // Titik bayangan ke-4 (terbaca 0) di luar `auto_points_size`, seperti mode Balanced di hardware asli.
+        fs::write(h.join("auto_points_size"), "3\n").unwrap();
+        fs::write(h.join("pwm1_auto_point4_pwm"), "0\n").unwrap();
+        fs::write(h.join("pwm2_auto_point4_pwm"), "0\n").unwrap();
         for n in 1..=3 {
             fs::write(h.join(format!("pwm1_auto_point{n}_temp_hyst")), format!("{}\n", 40 + n * 10)).unwrap();
             fs::write(h.join(format!("pwm1_auto_point{n}_temp")), format!("{}\n", if n == 3 { 127 } else { 50 + n * 10 })).unwrap();
@@ -359,6 +367,26 @@ pub(crate) mod tests {
         assert!(!l.fan_fullspeed().unwrap());
         l.set_fan_fullspeed(true).unwrap();
         assert!(l.fan_fullspeed().unwrap());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// Regression: mode Balanced punya 9 titik tetapi 10 file ada; titik bayangan (terbaca 0)
+    /// tidak boleh ikut terbaca/ditulis, atau kurva dianggap menurun dan Terapkan terkunci.
+    #[test]
+    fn curve_ignores_phantom_points() {
+        let (l, root) = fake("phantom"); // fake: 3 titik valid + 1 file bayangan
+        assert_eq!(l.points_size(), 3);
+        let c = l.curve().unwrap();
+        assert_eq!(c.len(), 3, "titik bayangan tidak boleh terbaca");
+        assert!(validate_curve(&c, peak(&c)).is_ok(), "kurva firmware sendiri harus lolos validasi");
+        l.set_curve(&c).unwrap(); // menulis 3 titik, tanpa menyentuh yang bayangan
+        assert_eq!(l.cpu_ranges().len(), 3);
+        // Tanpa atribut ukuran: jatuh kembali ke jumlah file.
+        fs::remove_file(root.join("hwmon/hwmon7/auto_points_size")).unwrap();
+        assert_eq!(l.points_size(), 4);
+        // Nilai ukuran yang tidak masuk akal diabaikan.
+        fs::write(root.join("hwmon/hwmon7/auto_points_size"), "99\n").unwrap();
+        assert_eq!(l.points_size(), 4);
         fs::remove_dir_all(root).ok();
     }
 
