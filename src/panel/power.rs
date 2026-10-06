@@ -5,7 +5,7 @@
 
 use super::Panel;
 use crate::{
-    hw,
+    hw, keeper,
     legion,
     theme::{self, ButtonKind},
 };
@@ -16,6 +16,30 @@ impl Panel {
     pub(super) fn refresh_cpu_state(&mut self) {
         self.boost_on = self.boost.as_ref().and_then(|b| b.get().ok());
         self.cpu_policy = hw::cpu_policy();
+    }
+
+    /// Simpan keadaan daya SEKARANG untuk penjaga (batas daya bila di bawah nilai asli, boost bila
+    /// dimatikan). `enabled=false` menyimpan data tapi menghentikan penerapan ulang.
+    pub(super) fn save_power(&mut self, enabled: bool) {
+        let (Some(path), Some(base)) = (self.cfg.as_deref().map(keeper::power_path), self.power_base) else { return };
+        let cur = self.legion.as_ref().and_then(|l| l.power_limits());
+        let saved = keeper::PowerSaved {
+            enabled,
+            base,
+            limits: cur.filter(|c| *c != base),
+            boost: (self.boost_on == Some(false)).then_some(false),
+        };
+        match saved.save(&path) {
+            Ok(()) => self.power_saved = Some(saved),
+            Err(e) => self.status = format!("Gagal menyimpan pengaturan daya: {e}"),
+        }
+    }
+
+    /// Bila "pertahankan" aktif, perbarui simpanan mengikuti perubahan terbaru.
+    fn resave_power_if_kept(&mut self) {
+        if self.power_saved.as_ref().is_some_and(|s| s.enabled) {
+            self.save_power(true);
+        }
     }
 
     pub fn power_ui(&mut self, ui: &mut egui::Ui, epoch: f64) {
@@ -46,7 +70,7 @@ impl Panel {
         theme::reveal(ui, epoch, 0, |ui| {
             theme::section_label(ui, "Batas daya CPU");
             ui.add_space(4.0);
-            ui.label(RichText::new("Membatasi watt yang boleh dipakai prosesor. Lebih rendah = lebih dingin dan hemat, tapi lonjakan performa berkurang. Hanya bisa diturunkan dari nilai firmware.").size(12.5).color(theme::TEXT_FAINT));
+            ui.label(RichText::new("Membatasi watt yang boleh dipakai prosesor. Lebih rendah = lebih dingin, tapi lonjakan performa berkurang. Efeknya bertahap, bukan pembatas keras. Hanya bisa diturunkan dari nilai asli firmware.").size(12.5).color(theme::TEXT_FAINT));
         });
         ui.add_space(18.0);
         let (Some(base), Some(mut edit)) = (self.power_base, self.power_edit) else {
@@ -91,27 +115,41 @@ impl Panel {
                     if let Some(r) = r {
                         if self.report("menulis batas daya", r, format!("Batas daya: {} W / {} W", edit.long_w, edit.short_w)) {
                             self.reload(false);
+                            self.resave_power_if_kept();
                         }
                     }
                 }
                 if theme::button(ui, "Kembalikan ke bawaan", ButtonKind::Ghost, true).clicked() {
-                    match self.mode {
-                        Some(m) if legion::MODES.iter().any(|x| x.0 == m) => {
-                            let r = self.legion.as_ref().map(|l| l.set_powermode(m));
-                            if let Some(r) = r {
-                                if self.report("mengembalikan bawaan firmware", r, "Dikembalikan ke bawaan firmware (kurva kipas ikut dimuat ulang)".into()) {
-                                    self.reload(true);
-                                }
+                    // Firmware tidak memuat ulang batas daya saat mode berganti, jadi yang ditulis
+                    // adalah nilai asli yang tersimpan. Turbo boost ikut dinyalakan; penjagaan dimatikan.
+                    let r = self.legion.as_ref().map(|l| l.set_power_limits(base));
+                    if let Some(r) = r {
+                        if self.report("mengembalikan batas daya", r, "Batas daya dan turbo boost dikembalikan ke bawaan".into()) {
+                            if let Some(b) = self.boost.as_ref() {
+                                let _ = b.set(true);
+                            }
+                            self.reload(false);
+                            if self.power_saved.is_some() {
+                                self.save_power(false);
                             }
                         }
-                        _ => self.status = "Gagal mengembalikan: mode sekarang bukan Quiet/Balanced/Performance.".into(),
                     }
                 }
             });
         });
         ui.add_space(8.0);
-        ui.label(RichText::new(format!("Nilai firmware untuk mode ini: {} W / {} W", base.long_w, base.short_w)).size(12.0).color(theme::TEXT_FAINT));
-        ui.add_space(10.0);
+        ui.label(RichText::new(format!("Nilai asli firmware: {} W / {} W", base.long_w, base.short_w)).size(12.0).color(theme::TEXT_FAINT));
+        ui.add_space(14.0);
+        theme::divider(ui);
+        ui.add_space(8.0);
+        let kept = self.power_saved.as_ref().is_some_and(|s| s.enabled);
+        if theme::reveal(ui, epoch, 4, |ui| {
+            theme::toggle_row(ui, "Pertahankan pengaturan ini", "Batas daya dan turbo boost diterapkan ulang otomatis setelah reboot atau bangun dari tidur, selama aplikasi/daemon berjalan", kept, true)
+        }) {
+            self.save_power(!kept);
+            self.status = if !kept { "Pengaturan daya akan dipertahankan otomatis.".into() } else { "Penjagaan pengaturan daya dimatikan.".into() };
+        }
+        ui.add_space(6.0);
         theme::status_line(ui, &self.status);
     }
 
@@ -127,11 +165,21 @@ impl Panel {
             if let Some(r) = r {
                 self.report("mengubah turbo boost", r, format!("Turbo boost: {}", if !boost_on { "ON" } else { "OFF" }));
                 self.refresh_cpu_state();
+                self.resave_power_if_kept();
             }
         }
 
-        let (full_on, full_ok) = (self.fullspeed.unwrap_or(false), self.fullspeed.is_some());
-        let hint = if full_ok { "Semua kipas berputar maksimum. Berisik; pakai saat beban berat." } else { "Butuh modul Legion" };
+        // Di model ini `fan_fullspeed` hanya bekerja pada mode Custom (255); di mode lain nilainya
+        // langsung kembali 0 walau penulisan diterima.
+        let custom = self.mode == Some(255);
+        let (full_on, full_ok) = (self.fullspeed.unwrap_or(false), self.fullspeed.is_some() && custom);
+        let hint = if !self.fullspeed.is_some() {
+            "Butuh modul Legion"
+        } else if !custom {
+            "Hanya bekerja di mode Custom. Pilih Custom di halaman Kipas & suhu."
+        } else {
+            "Semua kipas berputar maksimum (±5100 rpm di laptop ini). Berisik."
+        };
         if theme::reveal(ui, epoch, 2, |ui| theme::toggle_row(ui, "Kipas penuh", hint, full_on, full_ok)) {
             let r = self.legion.as_ref().map(|l| l.set_fan_fullspeed(!full_on));
             if let Some(r) = r {

@@ -3,7 +3,7 @@
 //! Logika akses hardware ada di `legion.rs`; file ini hanya memegang state UI
 //! (buffer kurva yang sedang diedit, konfirmasi, status) dan menggambarnya.
 
-use crate::keeper::{self, Saved};
+use crate::keeper::{self, PowerSaved, Saved};
 use crate::hw::Boost;
 use crate::legion::{self, Gpu, Legion, Point, PowerLimits, Sensors};
 use crate::theme::{self, ButtonKind};
@@ -48,6 +48,8 @@ pub struct Panel {
     /// Batas daya CPU: nilai firmware saat dimuat (batas atas yang boleh dipakai), buffer edit,
     /// dan status kipas penuh. Halaman Daya & panas: lihat `panel/power.rs`.
     power_base: Option<PowerLimits>,
+    /// Pengaturan daya yang dijaga (power.conf); `base` di dalamnya = nilai asli firmware.
+    power_saved: Option<PowerSaved>,
     power_edit: Option<PowerLimits>,
     fullspeed: Option<bool>,
     boost: Option<Boost>,
@@ -68,6 +70,7 @@ impl Panel {
     /// Konstruktor dengan dependensi diinjeksi (dipakai test).
     fn with(legion: Option<Legion>, gpus: Vec<Gpu>, cfg: Option<PathBuf>) -> Self {
         let saved = cfg.as_deref().and_then(Saved::load);
+        let cfg_for_power = cfg.as_deref().map(keeper::power_path).and_then(|p| PowerSaved::load(&p));
         let mut p = Self {
             legion,
             curve: vec![],
@@ -86,6 +89,7 @@ impl Panel {
             cfg,
             saved,
             power_base: None,
+            power_saved: cfg_for_power,
             power_edit: None,
             fullspeed: None,
             boost: Boost::find(Boost::DEFAULT_PATH),
@@ -112,8 +116,11 @@ impl Panel {
             Err(e) => self.status = format!("Gagal baca fan curve: {e}"),
         }
         if let Some(pl) = l.power_limits() {
-            if reset_baseline || self.power_base.is_none() {
-                self.power_base = Some(pl);
+            // Batas atas = nilai ASLI firmware: yang tersimpan di power.conf bila ada (aplikasi bisa
+            // dibuka saat batas sudah diturunkan), kalau tidak nilai saat ini. Firmware tidak
+            // mengubah batas daya saat mode berganti, jadi tidak perlu diatur ulang per mode.
+            if self.power_base.is_none() {
+                self.power_base = Some(self.power_saved.as_ref().map_or(pl, |s| s.base));
             }
             self.power_edit = Some(pl);
         }
@@ -342,8 +349,8 @@ impl Panel {
                     for (i, p) in self.curve.iter_mut().enumerate() {
                         let active = cur1 == Some(i) || cur2 == Some(i);
                         ui.label(theme::mono(format!("{:>2}", i + 1), 13.0).color(if active { theme::ACCENT } else { theme::TEXT_DIM }));
-                        ui.add(egui::DragValue::new(&mut p.pwm1).range(0..=255));
-                        ui.add(egui::DragValue::new(&mut p.pwm2).range(0..=255));
+                        ui.add(egui::DragValue::new(&mut p.pwm1).range(0..=153));
+                        ui.add(egui::DragValue::new(&mut p.pwm2).range(0..=153));
                         let range = match self.ranges.get(i).copied().flatten() {
                             Some((lo, hi)) if hi >= 127 => format!("{lo}–∞"),
                             Some((lo, hi)) => format!("{lo}–{hi}"),
@@ -506,6 +513,7 @@ mod tests {
                 let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                     p.fan_ui(ui, 0.0);
                     p.gpu_ui(ui, 0.0);
+                    p.power_ui(ui, 0.0);
                 });
                 // egui menolak FullOutput yang dibuang tanpa diproses renderer.
                 out.textures_delta.clear();
@@ -527,5 +535,36 @@ mod tests {
         p.set_keep(false);
         assert!(Saved::load(&cfg).is_some_and(|s| !s.enabled));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Simpanan daya: mengikuti keadaan sekarang (batas di bawah nilai asli), dan dibaca ulang
+    /// apa adanya oleh penjaga.
+    #[test]
+    fn power_saved_snapshot() {
+        let (l, root) = crate::legion::tests::fake("panel-power");
+        let cfg = root.join("cfg").join("fancurve.conf");
+        let mut p = Panel::with(Some(l), vec![], Some(cfg.clone()));
+        assert_eq!(p.power_base, Some(PowerLimits { long_w: 70, short_w: 88 }));
+        let file = keeper::power_path(&cfg);
+
+        p.save_power(true); // batas = nilai asli -> tidak ada yang dijaga selain boost
+        let s = PowerSaved::load(&file).unwrap();
+        assert!(s.enabled && s.limits.is_none());
+
+        p.legion.as_ref().unwrap().set_power_limits(PowerLimits { long_w: 50, short_w: 60 }).unwrap();
+        p.save_power(true);
+        let s = PowerSaved::load(&file).unwrap();
+        assert_eq!(s.limits, Some(PowerLimits { long_w: 50, short_w: 60 }));
+        assert_eq!(s.base, PowerLimits { long_w: 70, short_w: 88 }, "nilai asli tetap");
+
+        p.save_power(false);
+        assert!(!PowerSaved::load(&file).unwrap().enabled);
+        // Panel baru memakai base tersimpan, bukan nilai yang sudah diturunkan.
+        let (l2, root2) = crate::legion::tests::fake("panel-power2");
+        l2.set_power_limits(PowerLimits { long_w: 50, short_w: 60 }).unwrap();
+        let p2 = Panel::with(Some(l2), vec![], Some(cfg));
+        assert_eq!(p2.power_base, Some(PowerLimits { long_w: 70, short_w: 88 }));
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(root2).ok();
     }
 }

@@ -1,7 +1,7 @@
 //! Grafik fan curve interaktif: titik bisa diseret vertikal, titik aktif berdenyut.
 //!
 //! Sumbu X = nomor titik (merata, karena rentang suhu antar titik tumpang tindih),
-//! sumbu Y = pwm 0–255 (dengan label rpm di kiri). Yang digambar hanya garis, isian
+//! sumbu Y = pwm 0–153 (0–6000 rpm, label rpm di kiri). Yang digambar hanya garis, isian
 //! tipis, dan titik: tanpa bingkai kartu.
 
 use crate::{
@@ -15,7 +15,9 @@ use eframe::egui::{
 
 const HEIGHT: f32 = 290.0;
 const MARGIN: (f32, f32, f32, f32) = (40.0, 34.0, 18.0, 28.0); // kiri, kanan, atas, bawah
-const PWM_MAX: f32 = 255.0;
+/// Kipas fisik mentok ±5100 rpm (uji kipas penuh), jadi skala berhenti di 6000 rpm; pwm di atas
+/// ini tidak menambah kecepatan. Satuan: pwm ≈ rpm × 255 / 10000 (skala firmware).
+pub const PWM_MAX: f32 = 153.0;
 
 /// Gambar kurva. `active` = titik aktif kipas 1 dan 2; `ranges` = rentang suhu CPU tiap titik
 /// (hanya untuk tooltip). Mengembalikan `true` bila user menyeret titik (buffer berubah).
@@ -30,13 +32,13 @@ pub fn curve_plot(ui: &mut Ui, curve: &mut [Point], active: (Option<usize>, Opti
         Pos2::new(rect.right() - MARGIN.1, rect.bottom() - MARGIN.3),
     );
     let x_of = |i: usize| plot.left() + plot.width() * i as f32 / (n - 1) as f32;
-    let y_of = |pwm: u8| plot.bottom() - plot.height() * f32::from(pwm) / PWM_MAX;
+    let y_of = |pwm: u8| plot.bottom() - plot.height() * f32::from(pwm).min(PWM_MAX) / PWM_MAX;
     let mono = |s: f32| FontId::new(s, FontFamily::Name("geist-mono".into()));
 
     // Garis bantu tiap 2000 rpm; label di kiri.
-    for k in 0..=5u32 {
+    for k in 0..=3u32 {
         let rpm = k * 2000;
-        let pwm = (rpm as f32 * PWM_MAX / 10_000.0).round() as u8;
+        let pwm = (rpm as f32 * PWM_MAX / 6_000.0).round() as u8;
         let y = y_of(pwm);
         ui.painter().line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, if k == 0 { theme::SURFACE_HI } else { theme::LINE }));
         let label = if k == 0 { "0".to_string() } else { format!("{}k", rpm / 1000) };
@@ -77,7 +79,7 @@ pub fn curve_plot(ui: &mut Ui, curve: &mut [Point], active: (Option<usize>, Opti
                 let new = ((plot.bottom() - p.y) / plot.height() * PWM_MAX).round().clamp(0.0, PWM_MAX) as i16;
                 let diff = i16::from(curve[i].pwm2) - i16::from(curve[i].pwm1);
                 curve[i].pwm1 = new as u8;
-                curve[i].pwm2 = (new + diff).clamp(0, 255) as u8;
+                curve[i].pwm2 = (new + diff).clamp(0, PWM_MAX as i16) as u8;
                 changed = true;
             }
         }

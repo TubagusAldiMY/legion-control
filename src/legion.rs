@@ -158,7 +158,9 @@ impl Legion {
         }
     }
 
-    /// Kipas penuh (`fan_fullspeed`): `true` = semua kipas berputar maksimum.
+    /// Kipas penuh (`fan_fullspeed`): `true` = semua kipas berputar maksimum (±5100 rpm di
+    /// Legion 5 15ACH6, bukan 10000 seperti dilaporkan `fan1_max`). Di model ini hanya bekerja
+    /// pada mode Custom (255): di mode lain penulisan diterima tapi nilainya kembali 0.
     pub fn fan_fullspeed(&self) -> io::Result<bool> {
         Ok(Self::read(&self.sys, "fan_fullspeed")? != "0")
     }
@@ -228,8 +230,9 @@ pub fn validate_power(want: PowerLimits, baseline: PowerLimits) -> Result<(), St
 }
 
 /// Mode daya yang bisa dipilih user: (nilai sysfs, nama). Nilai ini cocok dengan
-/// `platform_profile` (1 low-power, 2 balanced, 3 performance), diuji di hardware.
-pub const MODES: [(u8, &str); 3] = [(1, "Quiet"), (2, "Balanced"), (3, "Performance")];
+/// `platform_profile` (1 low-power, 2 balanced, 3 performance), diuji di hardware. Custom (255)
+/// dibutuhkan agar `fan_fullspeed` bekerja di model ini.
+pub const MODES: [(u8, &str); 4] = [(1, "Quiet"), (2, "Balanced"), (3, "Performance"), (255, "Custom")];
 
 /// Nama mode daya untuk ditampilkan. 255 = Custom, 224 = Max power (ada di firmware tertentu).
 pub fn powermode_label(mode: u8) -> &'static str {
@@ -464,7 +467,7 @@ pub(crate) mod tests {
             assert_eq!(powermode_label(v), name, "nilai {v}");
         }
         // Regression: tombol mode harus menulis nilai yang diterima modul; 0 ditolak firmware (EINVAL).
-        assert_eq!(MODES.map(|m| m.0), [1, 2, 3]);
+        assert_eq!(MODES.map(|m| m.0), [1, 2, 3, 255]);
         l.set_powermode(1).unwrap();
         assert_eq!(powermode_label(l.powermode().unwrap()), "Quiet");
         assert!(l.gsync_supported());

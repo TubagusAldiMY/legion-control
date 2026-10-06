@@ -73,9 +73,10 @@ Verifikasi izin (semua `-rw-rw-r-- root plugdev`):
 ```bash
 ls -l /sys/devices/system/cpu/cpufreq/boost /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/{cpu_longterm_powerlimit,cpu_shortterm_powerlimit,fan_fullspeed}
 ```
-- **Batas daya CPU**: hanya bisa DITURUNKAN dari nilai firmware (laptop ini: 70 W / 88 W di mode Performance), minimal 25 W / 30 W, dan jangka pendek tidak boleh lebih kecil dari jangka panjang. Alasannya: di model ini kernel menulis nilai langsung ke firmware tanpa memeriksa rentang, jadi aplikasi yang menjaganya. Untuk kembali ke nilai firmware: tombol **Kembalikan ke bawaan** (memuat ulang mode, termasuk kurva kipas).
-- **Turbo boost**: mati = CPU dibatasi ke clock dasar; paling efektif menurunkan suhu beban berat.
-- **Kipas penuh**: semua kipas maksimum; berisik.
+- **Batas daya CPU**: hanya bisa DITURUNKAN dari nilai asli firmware (laptop ini: 70 W / 88 W), minimal 25 W / 30 W, dan jangka pendek tidak boleh lebih kecil dari jangka panjang. Alasannya: di model ini kernel menulis nilai langsung ke firmware tanpa memeriksa rentang, jadi aplikasi yang menjaganya. Efeknya bertahap, bukan pembatas keras (uji: 25/30 W menurunkan kenaikan suhu ±9°C dalam 8 detik dibanding 70/88 W). Firmware TIDAK memuat ulang batas daya saat mode berganti; **Kembalikan ke bawaan** menulis nilai asli yang tersimpan (dan menyalakan turbo boost).
+- **Turbo boost**: mati = CPU terkunci di clock dasar (±3,27 GHz di laptop ini). Ini tuas paling efektif: pada beban 6 thread suhu bertahan ±82°C, sedangkan dengan boost aktif naik sampai 89–100°C.
+- **Kipas penuh**: hanya bekerja di **mode Custom** (pilih Custom di halaman Kipas & suhu); kipas naik dari ±3800 ke ±5100 rpm. Di mode lain penulisan diterima tapi langsung kembali 0. Catatan: kipas fisik mentok ±5100 rpm; angka "10000" dari modul tidak nyata, sehingga grafik kurva berhenti di 6000 rpm.
+- **Pertahankan pengaturan ini**: batas daya (bila diturunkan) dan turbo boost (bila dimatikan) diterapkan ulang otomatis oleh penjaga (GUI atau `--daemon`) setelah reboot atau bangun dari tidur. Disimpan di `~/.config/legion-control/power.conf`. Mengembalikan ke bawaan mematikan penjagaan.
 - Panel "Kenapa panas?" menampilkan governor dan preferensi energi; bila `performance`, ganti profil sistem ke **Seimbang** di halaman Perangkat untuk pemakaian harian.
 
 ### Pertahankan kurva kipas
@@ -133,6 +134,7 @@ Perintah `scripts/install.sh` tidak memakai sudo; aturan udev tetap dipasang man
 | `make` gagal: `/lib/modules/.../build` tidak ada | `sudo apt install --reinstall linux-headers-$(uname -r)` |
 | Kurva kembali ke default sendiri | Firmware memuat ulang kurva saat mode diganti (Fn+Q) atau terlalu lama; klik Terapkan lagi |
 | Tombol mode: `Invalid argument (os error 22)` | Versi lama aplikasi memakai penomoran mode yang salah (0 ditolak firmware). Perbarui ke versi terbaru; nilai benar: 1 Quiet, 2 Balanced, 3 Performance |
+| Kipas penuh nonaktif / kembali 0 | Pilih mode **Custom** dulu (halaman Kipas & suhu) |
 | Daya & panas: "Gagal menulis batas daya ... Permission denied" | Aturan udev belum dipasang ulang (bagian Daya & panas) |
 | Kurva tidak bertahan setelah Fn+Q | Aktifkan "Pertahankan kurva ini" dan kembali ke mode tempat kurva disimpan; aplikasi harus berjalan |
 | Tombol Terapkan nonaktif | Kurva tidak lolos validasi (kecepatan turun saat suhu naik, atau titik terakhir <60% default); pesan merah menjelaskan |
