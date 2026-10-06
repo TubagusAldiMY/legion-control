@@ -10,6 +10,7 @@ Tracing OpenTelemetry **N/A** (bukan microservice); `request_id` juga N/A karena
 | `src/hw.rs` | **Satu-satunya** tempat yang menyentuh sistem: sysfs, `powerprofilesctl`, `fwupdmgr` + test |
 | `src/theme.rs` | Sistem desain: palet zinc + satu aksen emerald, font, dan komponen kustom (switch, segmented, tombol, stat, skeleton, ikon, reveal) |
 | `src/graph.rs` | Grafik kurva kipas interaktif (titik bisa diseret, titik aktif berdenyut) |
+| `scripts/install.sh` | Pasang/copot untuk pengguna ini: `cargo install`, ikon SVG (`assets/legion-control.svg`), entri menu, perbarui autostart |
 | `assets/fonts/` | Outfit (teks) dan Geist Mono (angka) beserta lisensi OFL; ditanam via `include_bytes!` |
 | `src/legion.rs` | Akses modul LenovoLegionLinux (sensor, fan curve, powermode, gsync) + `validate_curve` + daftar GPU. Path diinjeksi supaya bisa dites |
 | `src/keeper.rs` | Penjaga kurva kipas: thread latar yang menerapkan ulang kurva simpanan (`~/.config/legion-control/fancurve.conf`) saat mode daya sama dengan mode tempat kurva disimpan |
@@ -39,6 +40,15 @@ Sumber kebenaran selalu kernel, bukan variabel di UI, sehingga tampilan tetap be
 - **Fan curve**: dibaca dari `pwmY_auto_pointN_pwm` (jumlah titik = jumlah file). User mengedit buffer; **Terapkan** hanya aktif bila `validate_curve` lolos, lalu menulis semua titik dan membaca ulang. `baseline` (puncak kecepatan kurva firmware, bukan titik terakhir) hanya diset saat memuat/reset default, bukan setelah Terapkan.
 - **Reset default / ganti mode**: menulis `powermode` dengan penomoran WMI: 1 Quiet, 2 Balanced, 3 Performance (255 Custom, 224 Max power); 0 ditolak firmware. Firmware memuat kurva bawaan mode itu.
 - **Hybrid Mode**: `gsync` (1 = hybrid). Perubahan butuh konfirmasi dan berlaku setelah restart. Mode yang *sedang* berlaku diambil dari jumlah GPU di `/sys/bus/pci/devices`.
+
+## Mode proses
+| Perintah | Perilaku |
+|---|---|
+| `legion-control` | GUI penuh; menjalankan penjaga kurva bila belum ada yang menjaga |
+| `--hidden` | GUI mulai tersembunyi (hanya bila tray ada; tanpa tray jendela ditampilkan) |
+| `--daemon` | Tanpa jendela: hanya penjaga kurva, sampai logout/SIGTERM. Keluar bila modul tidak ada (kode 1) atau penjaga sudah ada (kode 0) |
+| `--autostart` | Dipakai file autostart login: `tray::available()` (probe StatusNotifierWatcher) → ada = GUI tersembunyi, tidak = `--daemon` |
+Penjaga tunggal: `keeper::spawn` mengambil kunci `flock` di `$XDG_RUNTIME_DIR/legion-control-keeper.lock`; pemilik pertama menjaga, lainnya melewati. Kunci dilepas OS saat proses berakhir, jadi tidak pernah basi.
 
 ## Alur penjaga kurva
 `App::new` → `keeper::spawn` (no-op bila modul tidak ada) → thread `fan-keeper`, tiap 2 detik: baca `fancurve.conf` → bila `enabled`, mode daya = `mode` simpanan, dan kurva hardware berbeda (toleransi ±2 pwm karena pembulatan hardware) → `validate_curve(simpanan, peak)` → `set_curve`. UI tidak berkomunikasi lewat channel: ia hanya menulis file (atomik: tulis `.tmp` lalu `rename`) dan penjaga membacanya di putaran berikutnya.

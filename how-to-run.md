@@ -75,8 +75,12 @@ gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
 Lalu muat ulang shell: di X11 tekan `Alt+F2`, ketik `r`, Enter (Wayland: logout-login). Setelah itu ikon muncul di panel atas, tombol X hanya menyembunyikan jendela, dan "Keluar" ada di menu ikon.
 KDE/XFCE/Cinnamon mendukung tray bawaan.
 
-### Autostart
-Nyalakan saklar "Mulai saat login" di dasar sidebar. Ini membuat `~/.config/autostart/legion-control.desktop` yang menjalankan `legion-control --hidden` (langsung ke tray; bila tray tidak ada, jendela tetap ditampilkan). Binary yang dipakai adalah yang sedang berjalan, jadi **pasang dulu ke lokasi tetap** (lihat Production) sebelum mencentang.
+### Autostart dan mode daemon
+Nyalakan saklar "Mulai saat login" di dasar sidebar. Ini membuat `~/.config/autostart/legion-control.desktop` yang menjalankan `legion-control --autostart`, yang memilih sendiri saat login:
+- **Ada tray** (ekstensi AppIndicator aktif): GUI mulai tersembunyi di tray, penjaga kurva ikut berjalan.
+- **Tidak ada tray** (GNOME bawaan): mode **daemon**, tanpa jendela, hanya penjaga kurva. Jendela tidak muncul tiap login; buka aplikasi dari menu bila perlu.
+Penjaga kurva hanya satu per pengguna (kunci di `$XDG_RUNTIME_DIR`): bila daemon sudah jalan dan Anda membuka GUI, GUI tidak menjalankan penjaga ganda. Mode daemon juga bisa dipanggil manual: `legion-control --daemon`.
+Binary yang ditulis ke file autostart adalah yang sedang berjalan, jadi **pasang dulu ke lokasi tetap** (lihat Production).
 
 ### Alat bantu desain (opsional)
 Flag baris perintah untuk iterasi tampilan tanpa menyentuh hardware:
@@ -90,11 +94,12 @@ Font **Outfit** dan **Geist Mono** (lisensi OFL, teks lisensi di `assets/fonts/`
 
 ## Production
 ```bash
-cargo build --release
-install -Dm755 target/release/legion-control ~/.local/bin/legion-control
-legion-control
+scripts/install.sh            # cargo install ke ~/.cargo/bin + ikon + entri menu 'Legion Control'
+legion-control                # atau buka dari menu aplikasi
+scripts/install.sh uninstall  # copot (juga menghapus file autostart)
 ```
-Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di stdout.
+Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di stdout. Untuk daemon: `pgrep -a legion-control` menampilkan proses dengan `--autostart`/`--daemon`, dan log berisi `"legion-control daemon start"`.
+Perintah `scripts/install.sh` tidak memakai sudo; aturan udev tetap dipasang manual (bagian Development).
 
 ## Troubleshooting
 | Gejala | Solusi |
@@ -114,4 +119,6 @@ Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di st
 | Tombol Terapkan nonaktif | Kurva tidak lolos validasi (kecepatan turun saat suhu naik, atau titik terakhir <60% default); pesan merah menjelaskan |
 | Ikon tray tidak muncul di GNOME | Ekstensi AppIndicator belum terpasang/aktif, lihat bagian Tray icon |
 | Autostart tidak jalan setelah binary dipindah | Matikan lalu nyalakan lagi centang autostart agar path diperbarui |
+| Jendela muncul tiap login | Autostart lama memakai `--hidden`. Jalankan `scripts/install.sh` (memperbarui ke `--autostart`) atau matikan-nyalakan saklar autostart |
+| Kurva tidak diterapkan setelah login | `pgrep -a legion-control` harus ada; cek log dengan menjalankan `legion-control --daemon` manual |
 | Jendela tidak muncul | Cek `echo $DISPLAY`/`$WAYLAND_DISPLAY`; app butuh sesi grafis |

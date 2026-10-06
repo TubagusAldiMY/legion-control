@@ -91,7 +91,11 @@ impl App {
         }
         // Penjaga kurva kipas berjalan di latar selama aplikasi hidup (no-op tanpa modul).
         if let Some(path) = keeper::config_path() {
-            keeper::spawn(path);
+            match keeper::spawn(path) {
+                keeper::Started::Yes => info!("penjaga kurva dimulai di GUI"),
+                keeper::Started::AlreadyRunning => info!("penjaga kurva sudah berjalan di proses lain (daemon)"),
+                keeper::Started::NoModule => {}
+            }
         }
         app.refresh();
         app
@@ -177,6 +181,8 @@ impl App {
                         if theme::switch(ui, on, true) {
                             let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
                             self.status = match a.set(!on, &exe) {
+                                // Binary di folder build akan hilang saat `cargo clean`: ingatkan untuk memasangnya.
+                                Ok(()) if !on && exe.contains("/target/") => "Autostart ON, tapi binary masih di folder target/. Jalankan scripts/install.sh agar path tetap.".to_string(),
                                 Ok(()) => format!("Autostart: {}", if !on { "ON" } else { "OFF" }),
                                 Err(e) => format!("Gagal ubah autostart: {e}"),
                             };
@@ -379,19 +385,51 @@ impl App {
     }
 }
 
-fn main() -> eframe::Result {
-    // Log JSON ke stdout; level diatur lewat RUST_LOG (default: warn, app sendiri info).
+/// Log JSON ke stdout; level diatur lewat RUST_LOG (default: warn, app sendiri info).
+fn init_logging() {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn,legion_control=info".into()))
         .init();
-    info!("legion-control start");
+}
 
+/// Mode tanpa jendela: hanya penjaga kurva. Mengembalikan kode keluar proses (tidak pernah
+/// kembali bila penjaga berhasil dimulai; proses berjalan sampai logout/SIGTERM).
+fn run_daemon() -> i32 {
+    info!("legion-control daemon start");
+    let Some(path) = keeper::config_path() else {
+        error!("folder konfigurasi tidak ditemukan");
+        return 1;
+    };
+    match keeper::spawn(path) {
+        keeper::Started::Yes => loop {
+            thread::park();
+        },
+        keeper::Started::AlreadyRunning => {
+            info!("penjaga kurva sudah berjalan di proses lain; daemon keluar");
+            0
+        }
+        keeper::Started::NoModule => {
+            error!("modul legion_laptop tidak terdeteksi; daemon keluar");
+            1
+        }
+    }
+}
+
+fn main() -> eframe::Result {
+    init_logging();
     let args: Vec<String> = std::env::args().collect();
-    let hidden = args.iter().any(|a| a == "--hidden");
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    // `--autostart` (dari file autostart login): GUI tersembunyi di tray bila tray ada,
+    // kalau tidak ada tray jalankan daemon tanpa jendela supaya tidak muncul jendela tiap login.
+    if has("--daemon") || (has("--autostart") && !tray::available()) {
+        std::process::exit(run_daemon());
+    }
+    info!("legion-control start");
+    let hidden = has("--hidden") || has("--autostart");
     let value_of = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let shot = value_of("--shot").map(PathBuf::from);
-    let no_module = args.iter().any(|a| a == "--no-module");
+    let no_module = has("--no-module");
     let tab = match value_of("--tab").as_deref() {
         Some("fan") => Tab::Fan,
         Some("gpu") => Tab::Gpu,
@@ -403,6 +441,7 @@ fn main() -> eframe::Result {
         .unwrap_or([1120.0, 720.0]);
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_app_id("legion-control")
             .with_inner_size(size)
             .with_min_inner_size([560.0, 520.0])
             .with_visible(!hidden),

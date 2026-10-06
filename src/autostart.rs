@@ -24,8 +24,9 @@ impl Autostart {
         self.file.exists()
     }
 
-    /// Nyalakan: tulis `.desktop` yang menjalankan binary ini dengan `--hidden`
-    /// (tersembunyi di tray). Matikan: hapus file.
+    /// Nyalakan: tulis `.desktop` yang menjalankan binary ini dengan `--autostart`
+    /// (GUI tersembunyi di tray bila tray ada, kalau tidak: mode daemon tanpa jendela).
+    /// Matikan: hapus file.
     pub fn set(&self, enabled: bool, exe: &str) -> io::Result<()> {
         if !enabled {
             return match fs::remove_file(&self.file) {
@@ -41,7 +42,7 @@ impl Autostart {
         fs::write(
             &self.file,
             format!(
-                "[Desktop Entry]\nType=Application\nName=Legion Control\nExec=\"{exe}\" --hidden\nIcon=preferences-system\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+                "[Desktop Entry]\nType=Application\nName=Legion Control\nExec=\"{exe}\" --autostart\nIcon=preferences-system\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
             ),
         )
     }
@@ -60,7 +61,7 @@ mod tests {
         a.set(true, "/opt/my app/legion-control").unwrap();
         assert!(a.is_enabled());
         let body = fs::read_to_string(&a.file).unwrap();
-        assert!(body.contains("Exec=\"/opt/my app/legion-control\" --hidden"));
+        assert!(body.contains("Exec=\"/opt/my app/legion-control\" --autostart"));
         a.set(false, "").unwrap();
         assert!(!a.is_enabled());
         a.set(false, "").unwrap(); // idempoten

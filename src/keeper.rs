@@ -129,11 +129,40 @@ pub fn tick(l: &Legion, saved: &Saved) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Jalankan penjaga di thread latar. Tidak melakukan apa-apa bila modul tidak terpasang.
-/// File dibaca ulang tiap putaran, jadi perubahan dari UI langsung terbaca tanpa channel.
-pub fn spawn(path: PathBuf) {
-    let Some(l) = Legion::detect() else { return };
+/// Hasil `spawn`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Started {
+    Yes,
+    /// Proses lain (mis. `--daemon`) sudah menjadi penjaga; yang ini tidak perlu ikut.
+    AlreadyRunning,
+    NoModule,
+}
+
+/// Berkas kunci penjaga tunggal. Di `XDG_RUNTIME_DIR` (per-user, dibersihkan saat logout).
+fn lock_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("legion-control-keeper.lock")
+}
+
+/// Ambil kunci eksklusif; `None` bila proses lain memegangnya. Kunci dilepas otomatis oleh OS
+/// saat proses pemilik berakhir (termasuk crash), jadi tidak ada kunci basi.
+fn acquire_lock(path: &Path) -> Option<fs::File> {
+    let f = fs::File::options().create(true).truncate(false).write(true).open(path).ok()?;
+    f.try_lock().ok().map(|()| f)
+}
+
+/// Jalankan penjaga di thread latar. Hanya satu penjaga per pengguna: GUI dan `--daemon`
+/// berbagi kunci, sehingga siapa pun yang lebih dulu hidup yang menjaga, dan keduanya tidak
+/// pernah menulis kurva bersamaan. File dibaca ulang tiap putaran, jadi perubahan dari UI
+/// langsung terbaca tanpa channel.
+pub fn spawn(path: PathBuf) -> Started {
+    spawn_with(path, &lock_path())
+}
+
+fn spawn_with(path: PathBuf, lock: &Path) -> Started {
+    let Some(l) = Legion::detect() else { return Started::NoModule };
+    let Some(lock_file) = acquire_lock(lock) else { return Started::AlreadyRunning };
     let _ = thread::Builder::new().name("fan-keeper".into()).spawn(move || {
+        let _lock = lock_file; // ditahan selama thread (= proses) hidup
         // Pesan error terakhir; dicatat sekali saja agar log tidak dibanjiri tiap 2 detik.
         let mut last_err: Option<String> = None;
         loop {
@@ -156,6 +185,7 @@ pub fn spawn(path: PathBuf) {
             thread::sleep(INTERVAL);
         }
     });
+    Started::Yes
 }
 
 #[cfg(test)]
@@ -248,5 +278,16 @@ mod tests {
         assert!(tick(&l, &unsafe_curve).is_err());
         assert_eq!(l.curve().unwrap(), vec![p(10, 12), p(40, 45), p(120, 130)]);
         fs::remove_dir_all(root).ok();
+    }
+
+    /// Hanya satu pemegang kunci pada satu waktu; setelah dilepas, yang lain bisa mengambil.
+    #[test]
+    fn single_keeper_lock() {
+        let path = std::env::temp_dir().join(format!("legion-keeper-lock-{}", std::process::id()));
+        let first = acquire_lock(&path).expect("kunci pertama harus berhasil");
+        assert!(acquire_lock(&path).is_none(), "kunci kedua harus ditolak selama yang pertama hidup");
+        drop(first);
+        assert!(acquire_lock(&path).is_some(), "setelah dilepas, kunci bisa diambil lagi");
+        fs::remove_file(path).ok();
     }
 }

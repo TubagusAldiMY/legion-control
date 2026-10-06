@@ -82,3 +82,22 @@ pub fn spawn(ctx: egui::Context) -> Option<mpsc::Receiver<TrayEvent>> {
         }
     }
 }
+
+/// Apakah desktop punya StatusNotifierWatcher (tray bisa tampil)? Memasang ikon sesaat lalu
+/// mencabutnya. Dipakai `--autostart` untuk memilih antara GUI di tray dan mode daemon,
+/// sebelum membuat jendela apa pun.
+pub fn available() -> bool {
+    struct Probe;
+    impl ksni::Tray for Probe {
+        fn id(&self) -> String {
+            "legion-control-probe".into()
+        }
+    }
+    match Probe.spawn() {
+        Ok(handle) => {
+            handle.shutdown().wait();
+            true
+        }
+        Err(_) => false,
+    }
+}
