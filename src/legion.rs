@@ -156,15 +156,25 @@ pub fn powermode_label(mode: u8) -> &'static str {
     }
 }
 
+/// Kecepatan tertinggi tiap kipas di kurva. Dipakai sebagai patokan aman, BUKAN titik terakhir:
+/// setelah firmware berpindah mode (Fn+Q) modul sempat membaca titik terakhir sebagai 0
+/// (log kernel: "fancurve with size 9"), dan patokan 0 akan mematikan batas aman.
+pub fn peak(pts: &[Point]) -> Point {
+    Point {
+        pwm1: pts.iter().map(|p| p.pwm1).max().unwrap_or(0),
+        pwm2: pts.iter().map(|p| p.pwm2).max().unwrap_or(0),
+    }
+}
+
 /// Batas bawah kecepatan di titik suhu tertinggi, relatif terhadap kurva firmware.
 const MIN_LAST_RATIO: f32 = 0.6;
 
 /// Periksa kurva sebelum ditulis. Aturan ada untuk mencegah kipas melambat di suhu tinggi
 /// (risiko overheat):
 /// 1. kecepatan tiap kipas tidak boleh turun saat suhu naik (non-decreasing);
-/// 2. titik terakhir (suhu tertinggi) minimal 60% dari titik terakhir kurva firmware
-///    (`baseline_last`), supaya kurva "senyap total" tidak lolos.
-pub fn validate_curve(pts: &[Point], baseline_last: Point) -> Result<(), String> {
+/// 2. titik terakhir (suhu tertinggi) minimal 60% dari puncak kurva firmware
+///    (`baseline`, lihat [`peak`]), supaya kurva "senyap total" tidak lolos.
+pub fn validate_curve(pts: &[Point], baseline: Point) -> Result<(), String> {
     if pts.is_empty() {
         return Err("kurva kosong".into());
     }
@@ -175,11 +185,11 @@ pub fn validate_curve(pts: &[Point], baseline_last: Point) -> Result<(), String>
     }
     let last = pts[pts.len() - 1];
     let min = |base: u8| (f32::from(base) * MIN_LAST_RATIO).ceil() as u8;
-    if last.pwm1 < min(baseline_last.pwm1) || last.pwm2 < min(baseline_last.pwm2) {
+    if last.pwm1 < min(baseline.pwm1) || last.pwm2 < min(baseline.pwm2) {
         return Err(format!(
             "titik terakhir terlalu pelan: minimal {} (kipas 1) dan {} (kipas 2) agar tidak overheat",
-            min(baseline_last.pwm1),
-            min(baseline_last.pwm2)
+            min(baseline.pwm1),
+            min(baseline.pwm2)
         ));
     }
     Ok(())
@@ -315,6 +325,18 @@ pub(crate) mod tests {
         for (name, pts, ok) in cases {
             assert_eq!(validate_curve(&pts, base).is_ok(), ok, "{name}");
         }
+    }
+
+    /// Regression: setelah ganti mode, titik terakhir terbaca 0. Patokan harus tetap puncak kurva (94),
+    /// bukan 0, supaya kurva "semua 0" tetap ditolak.
+    #[test]
+    fn baseline_ignores_bogus_last_point() {
+        let p = |a, b| Point { pwm1: a, pwm2: b };
+        let quirk = [p(0, 0), p(43, 43), p(94, 94), p(0, 0)];
+        assert_eq!(peak(&quirk), p(94, 94));
+        assert!(validate_curve(&[p(0, 0), p(0, 0), p(0, 0), p(0, 0)], peak(&quirk)).is_err());
+        assert!(validate_curve(&quirk, peak(&quirk)).is_err(), "titik terakhir 0 harus ditolak");
+        assert_eq!(peak(&[]), p(0, 0));
     }
 
     /// Smoke di hardware asli (hanya membaca): jalankan dengan `cargo test -- --ignored`

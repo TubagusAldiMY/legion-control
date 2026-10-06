@@ -14,7 +14,7 @@ pub struct Panel {
     legion: Option<Legion>,
     /// Kurva yang sedang diedit user (belum tentu sudah ditulis ke firmware).
     curve: Vec<Point>,
-    /// Titik terakhir kurva firmware, patokan batas aman di `validate_curve`. Hanya diperbarui
+    /// Puncak kecepatan kurva firmware, patokan batas aman di `validate_curve`. Hanya diperbarui
     /// saat memuat default firmware, BUKAN setelah "Terapkan", supaya batas tidak turun berulang-ulang.
     baseline: Option<Point>,
     mode: Option<u8>,
@@ -58,7 +58,7 @@ impl Panel {
         match l.curve() {
             Ok(c) => {
                 if reset_baseline || self.baseline.is_none() {
-                    self.baseline = c.last().copied();
+                    self.baseline = Some(legion::peak(&c));
                 }
                 self.curve = c;
             }
