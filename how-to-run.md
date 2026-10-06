@@ -61,8 +61,8 @@ ls -l $H/pwm1_auto_point1_pwm /sys/module/legion_laptop/drivers/platform:legion/
 **Cek konsistensi Hybrid Mode sekali setelah modul terpasang.** Saat ini hanya NVIDIA yang terlihat di `lspci` (iGPU disembunyikan = mode dGPU-only), jadi `cat /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/gsync` (kernel ≥7.0: folder `legion`) seharusnya `0`. Bila hasilnya `1`, arti nilainya terbalik di model ini: jangan pakai tombol Hybrid dan laporkan.
 
 ### Pertahankan kurva kipas
-Firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau setelah reboot. Di tab Fan, centang **Pertahankan kurva ini**: kurva yang disimpan akan diterapkan ulang otomatis setiap kali mode kembali ke **Custom**, selama aplikasi berjalan (aktifkan autostart agar jalan sejak login). Di mode Quiet/Balanced/Performance aplikasi tidak menyentuh kurva.
-- Alur: ubah angka → **Terapkan** (kurva ikut tersimpan) → pastikan mode Custom.
+Firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau setelah reboot. Di tab Fan, centang **Pertahankan kurva ini**: kurva yang disimpan akan diterapkan ulang otomatis setiap kali Anda kembali ke **mode tempat kurva itu disimpan** (Quiet/Balanced/Performance, sama dengan Fn+Q), selama aplikasi berjalan (aktifkan autostart agar jalan sejak login). Di mode lain aplikasi tidak menyentuh kurva, karena firmware punya kurva bawaan terpisah per mode.
+- Alur: ubah angka → **Terapkan** (kurva ikut tersimpan) → kurva tersimpan untuk mode yang sedang aktif.
 - Kurva tersimpan di `~/.config/legion-control/fancurve.conf` (teks biasa; hapus file atau lepas centang untuk berhenti).
 - Hardware membulatkan pwm ke satuan 100 rpm (≈2,55 pwm), jadi angka yang terbaca bisa selisih 1 dari yang ditulis; itu normal.
 
@@ -99,7 +99,8 @@ Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di st
 | `insmod ... Key was rejected` | Secure Boot aktif; nonaktifkan atau tandatangani modul (`mokutil --sb-state`) |
 | `make` gagal: `/lib/modules/.../build` tidak ada | `sudo apt install --reinstall linux-headers-$(uname -r)` |
 | Kurva kembali ke default sendiri | Firmware memuat ulang kurva saat mode diganti (Fn+Q) atau terlalu lama; klik Terapkan lagi |
-| Kurva tidak bertahan setelah Fn+Q | Aktifkan "Pertahankan kurva ini" dan pastikan mode kembali ke Custom; aplikasi harus berjalan |
+| Tombol mode: `Invalid argument (os error 22)` | Versi lama aplikasi memakai penomoran mode yang salah (0 ditolak firmware). Perbarui ke versi terbaru; nilai benar: 1 Quiet, 2 Balanced, 3 Performance |
+| Kurva tidak bertahan setelah Fn+Q | Aktifkan "Pertahankan kurva ini" dan kembali ke mode tempat kurva disimpan; aplikasi harus berjalan |
 | Tombol Terapkan nonaktif | Kurva tidak lolos validasi (kecepatan turun saat suhu naik, atau titik terakhir <60% default); pesan merah menjelaskan |
 | Ikon tray tidak muncul di GNOME | Ekstensi AppIndicator belum terpasang/aktif, lihat bagian Tray icon |
 | Autostart tidak jalan setelah binary dipindah | Matikan lalu nyalakan lagi centang autostart agar path diperbarui |

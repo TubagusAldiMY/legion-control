@@ -124,7 +124,12 @@ impl Panel {
         let hw = self.legion.as_ref().and_then(|l| l.curve().ok());
         let saved = match (self.saved.clone(), hw) {
             (Some(s), _) => Saved { enabled: on, ..s },
-            (None, Some(curve)) => Saved { enabled: on, peak: self.baseline.unwrap_or_else(|| legion::peak(&curve)), curve },
+            (None, Some(curve)) => Saved {
+                enabled: on,
+                mode: self.mode.unwrap_or(3),
+                peak: self.baseline.unwrap_or_else(|| legion::peak(&curve)),
+                curve,
+            },
             (None, None) => return,
         };
         self.persist(saved);
@@ -167,9 +172,9 @@ impl Panel {
         ui.label(format!("Posisi kurva: kipas 1 di {}; kipas 2 di {}", show(cur1, s.fan1_target_rpm), show(cur2, s.fan2_target_rpm)));
 
         ui.separator();
-        ui.label("Mode Legion (EC). Mengganti mode memuat kurva bawaan mode itu.");
+        ui.label("Mode Legion (sama dengan Fn+Q). Tiap mode punya kurva bawaan sendiri; berpindah memuatnya.");
         ui.horizontal(|ui| {
-            for (m, name) in [(2u8, "Quiet"), (0, "Balanced"), (1, "Performance")] {
+            for (m, name) in legion::MODES {
                 let active = self.mode == Some(m);
                 if ui.selectable_label(active, name).clicked() && !active {
                     let r = self.legion.as_ref().map(|l| l.set_powermode(m));
@@ -180,10 +185,10 @@ impl Panel {
                     }
                 }
             }
-            if self.mode.is_some_and(|m| m > 2) {
-                ui.weak("(sekarang: Custom)");
-            }
         });
+        if let Some(m) = self.mode {
+            ui.weak(format!("Mode sekarang: {}", legion::powermode_label(m)));
+        }
 
         ui.separator();
         ui.label("Fan curve (pwm 0–255, naik seiring suhu)");
@@ -226,14 +231,14 @@ impl Panel {
                         // Bila "pertahankan" aktif, kurva baru ini menjadi simpanan.
                         if self.saved.as_ref().is_some_and(|s| s.enabled) {
                             let peak = self.baseline.unwrap_or_else(|| legion::peak(&self.curve));
-                            self.persist(Saved { enabled: true, peak, curve: self.curve.clone() });
+                            self.persist(Saved { enabled: true, mode: self.mode.unwrap_or(3), peak, curve: self.curve.clone() });
                         }
                     }
                 }
             }
             if ui.button("Reset ke default").clicked() {
                 match self.mode {
-                    Some(m) if m <= 2 => {
+                    Some(m) if legion::MODES.iter().any(|x| x.0 == m) => {
                         let r = self.legion.as_ref().map(|l| l.set_powermode(m));
                         if let Some(r) = r {
                             if self.report("reset fan curve", r, "Kurva dikembalikan ke default firmware".into()) {
@@ -241,7 +246,7 @@ impl Panel {
                             }
                         }
                     }
-                    _ => self.status = "Mode Custom: pilih Quiet/Balanced/Performance dulu.".into(),
+                    _ => self.status = "Mode sekarang bukan Quiet/Balanced/Performance: pilih salah satu dulu.".into(),
                 }
             }
             if ui.button("Muat ulang").clicked() {
@@ -251,12 +256,12 @@ impl Panel {
         let mut keep = self.saved.as_ref().is_some_and(|s| s.enabled);
         if ui
             .checkbox(&mut keep, "Pertahankan kurva ini")
-            .on_hover_text("Bila mode Custom dan firmware menimpa kurva, aplikasi menerapkan ulang kurva simpanan (selama aplikasi berjalan).")
+            .on_hover_text("Bila firmware menimpa kurva di mode ini (mis. setelah Fn+Q lalu kembali), aplikasi menerapkan ulang kurva simpanan selama aplikasi berjalan.")
             .changed()
         {
             self.set_keep(keep);
         }
-        ui.weak("Firmware menimpa kurva saat mode diganti (Fn+Q). Dengan \"Pertahankan\", kurva diterapkan ulang otomatis saat mode kembali ke Custom.");
+        ui.weak("Firmware menimpa kurva saat mode diganti (Fn+Q). Dengan \"Pertahankan\", kurva diterapkan ulang otomatis saat Anda kembali ke mode tempat kurva disimpan.");
         ui.weak(&self.status);
     }
 

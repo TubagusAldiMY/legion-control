@@ -122,7 +122,9 @@ impl Legion {
         Ok(())
     }
 
-    /// Mode daya Legion di EC: 0 balanced, 1 performance, 2 quiet, selain itu custom.
+    /// Mode daya Legion. Penomoran sysfs `powermode` (baca DAN tulis) = penomoran WMI, lihat
+    /// [`MODES`]. Header dokumentasi modul ("0 balanced, 1 performance, 2 quiet") sudah usang:
+    /// itu penomoran register EC internal, dan menulis `0` ditolak dengan EINVAL.
     pub fn powermode(&self) -> io::Result<u8> {
         Self::read(&self.sys, "powermode")?
             .parse()
@@ -152,13 +154,19 @@ impl Legion {
     }
 }
 
-/// Nama mode daya Legion untuk ditampilkan.
+/// Mode daya yang bisa dipilih user: (nilai sysfs, nama). Nilai ini cocok dengan
+/// `platform_profile` (1 low-power, 2 balanced, 3 performance), diuji di hardware.
+pub const MODES: [(u8, &str); 3] = [(1, "Quiet"), (2, "Balanced"), (3, "Performance")];
+
+/// Nama mode daya untuk ditampilkan. 255 = Custom, 224 = Max power (ada di firmware tertentu).
 pub fn powermode_label(mode: u8) -> &'static str {
     match mode {
-        0 => "Balanced",
-        1 => "Performance",
-        2 => "Quiet",
-        _ => "Custom",
+        1 => "Quiet",
+        2 => "Balanced",
+        3 => "Performance",
+        224 => "Max power",
+        255 => "Custom",
+        _ => "Tidak dikenal",
     }
 }
 
@@ -271,7 +279,7 @@ pub(crate) mod tests {
         for (f, v) in [("fan1_input", "2100"), ("fan2_input", "2300"), ("fan1_target", "1600"), ("fan2_target", "4700"), ("temp1_input", "52000"), ("temp2_input", "0"), ("temp3_input", "45")] {
             fs::write(h.join(f), format!("{v}\n")).unwrap();
         }
-        fs::write(sys.join("powermode"), "0\n").unwrap();
+        fs::write(sys.join("powermode"), "2\n").unwrap();
         fs::write(sys.join("issupportgsync"), "1\n").unwrap();
         fs::write(sys.join("gsync"), "0\n").unwrap();
         let l = Legion::detect_in(&[root.join("tidak-ada"), sys], &hw).expect("harus terdeteksi");
@@ -312,14 +320,18 @@ pub(crate) mod tests {
         fs::remove_dir_all(root).ok();
     }
 
-    /// Sanity: powermode & gsync, termasuk nilai custom dan file hilang.
+    /// Sanity: powermode memakai penomoran WMI (1 quiet, 2 balanced, 3 performance, 255 custom).
     #[test]
     fn mode_and_gsync() {
         let (l, root) = fake("mode");
-        assert_eq!(l.powermode().unwrap(), 0);
-        l.set_powermode(2).unwrap();
+        assert_eq!(powermode_label(l.powermode().unwrap()), "Balanced");
+        for (v, name) in [(1, "Quiet"), (2, "Balanced"), (3, "Performance"), (224, "Max power"), (255, "Custom"), (0, "Tidak dikenal")] {
+            assert_eq!(powermode_label(v), name, "nilai {v}");
+        }
+        // Regression: tombol mode harus menulis nilai yang diterima modul; 0 ditolak firmware (EINVAL).
+        assert_eq!(MODES.map(|m| m.0), [1, 2, 3]);
+        l.set_powermode(1).unwrap();
         assert_eq!(powermode_label(l.powermode().unwrap()), "Quiet");
-        assert_eq!(powermode_label(255), "Custom");
         assert!(l.gsync_supported());
         assert!(!l.gsync().unwrap());
         l.set_gsync(true).unwrap();
@@ -398,7 +410,17 @@ pub(crate) mod tests {
         let c = l.curve().expect("fan curve tidak terbaca");
         assert!(c.len() >= 2, "kurva terlalu pendek: {c:?}");
         assert!(l.sensors().cpu_c.is_some_and(|t| (10..120).contains(&t)), "suhu CPU tak wajar");
-        assert!(l.powermode().is_ok());
+        // Regression: label mode harus konsisten dengan platform_profile milik kernel.
+        let mode = l.powermode().expect("powermode tidak terbaca");
+        if let Ok(pp) = fs::read_to_string("/sys/firmware/acpi/platform_profile") {
+            let want = match mode {
+                1 => "low-power",
+                2 => "balanced",
+                3 => "performance",
+                _ => pp.trim(), // custom/max: tidak ada padanan pasti
+            };
+            assert_eq!(pp.trim(), want, "powermode={mode} tidak cocok dengan platform_profile");
+        }
         assert!(l.gsync_supported(), "gsync seharusnya didukung di 82JW");
         l.gsync().expect("gsync tidak terbaca");
         // Titik aktif harus ketemu dan kecepatannya cocok dengan target firmware.

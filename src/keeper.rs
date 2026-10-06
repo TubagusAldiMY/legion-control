@@ -2,9 +2,9 @@
 //!
 //! Masalah: firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau
 //! reboot, sehingga kurva buatan user hilang. Penjaga ini membaca mode dan kurva tiap
-//! beberapa detik; bila mode = Custom dan kurva di hardware berbeda dari yang disimpan,
-//! ia menulis ulang kurva simpanan. Di mode lain (Quiet/Balanced/Performance) ia tidak
-//! melakukan apa-apa, supaya tidak melawan pilihan user.
+//! beberapa detik; bila mode daya sama dengan mode tempat kurva disimpan dan kurva di
+//! hardware berbeda, ia menulis ulang kurva simpanan. Di mode lain ia tidak melakukan
+//! apa-apa, supaya tidak melawan pilihan user (firmware punya kurva terpisah per mode).
 //!
 //! Penjaga hanya hidup selama aplikasi berjalan (di tray); autostart membuatnya aktif
 //! sejak login.
@@ -18,8 +18,8 @@ use std::{
 };
 use tracing::{error, info};
 
-/// Nilai `powermode` untuk Custom pada penomoran EC (0 Balanced, 1 Performance, 2 Quiet).
-const CUSTOM_MODE: u8 = 3;
+/// Mode untuk file simpanan lama yang belum mencatat mode (3 = Performance).
+const DEFAULT_MODE: u8 = 3;
 const INTERVAL: Duration = Duration::from_secs(2);
 
 /// Kurva simpanan. `peak` = puncak kurva firmware saat disimpan; dipakai sebagai patokan
@@ -27,6 +27,8 @@ const INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
     pub enabled: bool,
+    /// Mode daya (nilai sysfs `powermode`) tempat kurva ini disimpan; hanya di mode ini diterapkan.
+    pub mode: u8,
     pub peak: Point,
     pub curve: Vec<Point>,
 }
@@ -35,12 +37,13 @@ impl Saved {
     /// Format teks sederhana (tanpa dependensi serde):
     /// ```text
     /// enabled=1
+    /// mode=3
     /// peak=102 102
     /// point=0 0
     /// point=43 43
     /// ```
     pub fn render(&self) -> String {
-        let mut out = format!("enabled={}\npeak={} {}\n", u8::from(self.enabled), self.peak.pwm1, self.peak.pwm2);
+        let mut out = format!("enabled={}\nmode={}\npeak={} {}\n", u8::from(self.enabled), self.mode, self.peak.pwm1, self.peak.pwm2);
         for p in &self.curve {
             out += &format!("point={} {}\n", p.pwm1, p.pwm2);
         }
@@ -54,7 +57,7 @@ impl Saved {
             let (a, b) = (it.next()?.ok()?, it.next()?.ok()?);
             it.next().is_none().then_some(Point { pwm1: a, pwm2: b })
         };
-        let (mut enabled, mut peak, mut curve) = (None, None, vec![]);
+        let (mut enabled, mut mode, mut peak, mut curve) = (None, DEFAULT_MODE, None, vec![]);
         for line in text.lines() {
             let Some(kv) = line.split_once('=') else {
                 if line.trim().is_empty() {
@@ -64,12 +67,13 @@ impl Saved {
             };
             match kv {
                 ("enabled", v) => enabled = Some(v.trim() == "1"),
+                ("mode", v) => mode = v.trim().parse().ok()?,
                 ("peak", v) => peak = Some(pair(v)?),
                 ("point", v) => curve.push(pair(v)?),
                 _ => {}
             }
         }
-        (!curve.is_empty()).then_some(Self { enabled: enabled?, peak: peak?, curve })
+        (!curve.is_empty()).then_some(Self { enabled: enabled?, mode, peak: peak?, curve })
     }
 
     pub fn load(path: &Path) -> Option<Self> {
@@ -108,7 +112,7 @@ fn similar(a: &[Point], b: &[Point]) -> bool {
 
 /// Satu putaran pemeriksaan. `Ok(true)` = kurva ditulis ulang.
 pub fn tick(l: &Legion, saved: &Saved) -> io::Result<bool> {
-    if !saved.enabled || l.powermode()? != CUSTOM_MODE {
+    if !saved.enabled || l.powermode()? != saved.mode {
         return Ok(false);
     }
     let now = l.curve()?;
@@ -163,7 +167,14 @@ mod tests {
     }
 
     fn saved(curve: Vec<Point>) -> Saved {
-        Saved { enabled: true, peak: p(120, 130), curve }
+        Saved { enabled: true, mode: 3, peak: p(120, 130), curve }
+    }
+
+    /// Kompatibilitas: file lama tanpa baris `mode=` dianggap mode 3 (Performance).
+    #[test]
+    fn parse_old_file_defaults_mode() {
+        let s = Saved::parse("enabled=1\npeak=102 102\npoint=0 0\npoint=43 43\n").unwrap();
+        assert_eq!(s.mode, 3);
     }
 
     /// Sanity: render lalu parse mengembalikan data yang sama.
@@ -176,7 +187,7 @@ mod tests {
     /// Edge: file rusak ditolak seluruhnya (tidak ada kurva setengah-jadi).
     #[test]
     fn parse_rejects_garbage() {
-        for bad in ["", "enabled=1\npeak=1 2\n", "enabled=1\npeak=1 2\npoint=300 1\n", "enabled=1\npeak=1 2\npoint=1\n", "sampah tanpa sama dengan", "peak=1 2\npoint=1 1\n"] {
+        for bad in ["", "enabled=1\npeak=1 2\n", "enabled=1\npeak=1 2\npoint=300 1\n", "enabled=1\nmode=abc\npeak=1 2\npoint=1 1\n", "enabled=1\npeak=1 2\npoint=1\n", "sampah tanpa sama dengan", "peak=1 2\npoint=1 1\n"] {
             assert_eq!(Saved::parse(bad), None, "{bad:?}");
         }
     }
@@ -196,21 +207,24 @@ mod tests {
     /// Perilaku inti `tick` (table-driven): kapan menulis ulang, kapan diam, kapan galat.
     #[test]
     fn tick_behaviour() {
-        // Kurva palsu dari legion::tests::fake = (10,12) (40,45) (120,130), mode awal 0.
+        // Kurva palsu dari legion::tests::fake = (10,12) (40,45) (120,130), mode awal 2 (Balanced).
         let mine = vec![p(20, 22), p(60, 65), p(130, 140)];
         let (l, root) = crate::legion::tests::fake("keeper");
         let mode = root.join("sys/powermode");
         let set_mode = |m: &str| fs::write(&mode, format!("{m}\n")).unwrap();
 
-        // Mode bukan Custom: diam, kurva tidak disentuh.
+        // Mode berbeda dari mode simpanan (hardware 2, simpanan 3): diam, kurva tidak disentuh.
         assert!(!tick(&l, &saved(mine.clone())).unwrap());
         assert_ne!(l.curve().unwrap(), mine);
 
-        // Dinonaktifkan: diam walau mode Custom.
+        // Dinonaktifkan: diam walau mode sama.
         set_mode("3");
         assert!(!tick(&l, &Saved { enabled: false, ..saved(mine.clone()) }).unwrap());
 
-        // Custom + kurva berbeda: ditulis ulang; putaran berikutnya diam (sudah sama).
+        // Simpanan untuk mode lain (Quiet=1) tidak diterapkan di mode 3.
+        assert!(!tick(&l, &Saved { mode: 1, ..saved(mine.clone()) }).unwrap());
+
+        // Mode sama + kurva berbeda: ditulis ulang; putaran berikutnya diam (sudah sama).
         assert!(tick(&l, &saved(mine.clone())).unwrap());
         assert_eq!(l.curve().unwrap(), mine);
         assert!(!tick(&l, &saved(mine.clone())).unwrap());
