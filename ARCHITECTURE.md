@@ -8,6 +8,9 @@ Tracing OpenTelemetry **N/A** (bukan microservice); `request_id` juga N/A karena
 |---|---|
 | `src/main.rs` | Entry point, setup log JSON, jendela egui, menggambar state & meneruskan klik |
 | `src/hw.rs` | **Satu-satunya** tempat yang menyentuh sistem: sysfs, `powerprofilesctl`, `fwupdmgr` + test |
+| `src/theme.rs` | Sistem desain: palet zinc + satu aksen emerald, font, dan komponen kustom (switch, segmented, tombol, stat, skeleton, ikon, reveal) |
+| `src/graph.rs` | Grafik kurva kipas interaktif (titik bisa diseret, titik aktif berdenyut) |
+| `assets/fonts/` | Outfit (teks) dan Geist Mono (angka) beserta lisensi OFL; ditanam via `include_bytes!` |
 | `src/legion.rs` | Akses modul LenovoLegionLinux (sensor, fan curve, powermode, gsync) + `validate_curve` + daftar GPU. Path diinjeksi supaya bisa dites |
 | `src/keeper.rs` | Penjaga kurva kipas: thread latar yang menerapkan ulang kurva simpanan (`~/.config/legion-control/fancurve.conf`) saat mode daya sama dengan mode tempat kurva disimpan |
 | `src/panel.rs` | State & tampilan tab Fan dan GPU |
@@ -16,6 +19,10 @@ Tracing OpenTelemetry **N/A** (bukan microservice); `request_id` juga N/A karena
 | `udev/99-legion-control.rules` | Aturan udev yang memberi grup `plugdev` izin tulis ke file sysfs |
 | `Cargo.toml` / `Cargo.lock` | Dependensi: `eframe` (UI), `tracing` + `tracing-subscriber` (log JSON) |
 | `how-to-run.md` | Cara setup & menjalankan |
+
+## Tampilan
+Sidebar kiri (merek, navigasi, status tray, autostart) + halaman di kanan. Tiap halaman asimetris: kolom lebar untuk kontrol utama, kolom sempit untuk sensor/pengaturan sekunder; di bawah 760px keduanya menumpuk. Tanpa kartu: hierarki lewat pemisah 1px, label kecil huruf kapital, dan ruang kosong. Semua angka memakai Geist Mono. Satu aksen (emerald); merah hanya untuk galat dan suhu ≥ 90°C.
+Gerak hanya lewat opasitas/posisi: reveal bertahap saat halaman dibuka, geser knob switch, pil segmented meluncur, angka sensor menyusul target. Animasi terus-menerus (denyut titik aktif) hanya jalan saat jendela difokus.
 
 ## Alur program
 `main()` → pasang logger JSON (stdout) → baca flag `--hidden` → `eframe::run_native` → `App::new()` (buat `Sysfs`, `spawn` tray, panggil `refresh()`) → loop UI.

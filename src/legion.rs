@@ -108,6 +108,19 @@ impl Legion {
         Ok(pts)
     }
 
+    /// Rentang suhu CPU (min, max) tiap titik, searah dengan [`Legion::curve`]. Modul menyimpan
+    /// batas bawah di `pwm1_auto_pointN_temp_hyst` dan batas atas di `pwm1_auto_pointN_temp`
+    /// (diamati di hardware: 73 dan 84 untuk titik 8); 127 berarti tanpa batas atas.
+    pub fn cpu_ranges(&self) -> Vec<Option<(u8, u8)>> {
+        (1..)
+            .take_while(|n| self.hwmon.join(format!("pwm1_auto_point{n}_pwm")).exists())
+            .map(|n| {
+                let get = |suffix: &str| Self::read_num(&self.hwmon, &format!("pwm1_auto_point{n}_{suffix}")).and_then(|v| u8::try_from(v).ok());
+                Some((get("temp_hyst")?, get("temp")?))
+            })
+            .collect()
+    }
+
     /// Tulis fan curve. Jumlah titik harus sama dengan firmware (panjang tetap).
     /// Validasi aman/tidaknya kurva ada di [`validate_curve`], dipanggil oleh UI sebelum ini.
     pub fn set_curve(&self, pts: &[Point]) -> io::Result<()> {
@@ -276,6 +289,10 @@ pub(crate) mod tests {
             fs::write(h.join(format!("pwm1_auto_point{n}_pwm")), format!("{a}\n")).unwrap();
             fs::write(h.join(format!("pwm2_auto_point{n}_pwm")), format!("{b}\n")).unwrap();
         }
+        for n in 1..=3 {
+            fs::write(h.join(format!("pwm1_auto_point{n}_temp_hyst")), format!("{}\n", 40 + n * 10)).unwrap();
+            fs::write(h.join(format!("pwm1_auto_point{n}_temp")), format!("{}\n", if n == 3 { 127 } else { 50 + n * 10 })).unwrap();
+        }
         for (f, v) in [("fan1_input", "2100"), ("fan2_input", "2300"), ("fan1_target", "1600"), ("fan2_target", "4700"), ("temp1_input", "52000"), ("temp2_input", "0"), ("temp3_input", "45")] {
             fs::write(h.join(f), format!("{v}\n")).unwrap();
         }
@@ -317,6 +334,16 @@ pub(crate) mod tests {
         l.set_curve(&c).unwrap();
         assert_eq!(l.curve().unwrap(), c);
         assert!(l.set_curve(&c[..2]).is_err());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// Sanity: rentang suhu CPU terbaca per titik; 127 = tanpa batas atas.
+    #[test]
+    fn cpu_ranges_read() {
+        let (l, root) = fake("ranges");
+        assert_eq!(l.cpu_ranges(), vec![Some((50, 60)), Some((60, 70)), Some((70, 127))]);
+        fs::remove_file(root.join("hwmon/hwmon7/pwm1_auto_point2_temp")).unwrap();
+        assert_eq!(l.cpu_ranges()[1], None, "file hilang = None, bukan panic");
         fs::remove_dir_all(root).ok();
     }
 

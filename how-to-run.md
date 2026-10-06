@@ -31,7 +31,7 @@ Keduanya harus `-rw-rw-r-- root plugdev` (`1-3` = kamera bawaan; nomornya bisa b
 Izin ini hilang saat reboot lalu dipasang ulang otomatis oleh aturan udev.
 
 ### Modul LenovoLegionLinux (tab Fan dan GPU)
-Tab Fan (kurva kipas, sensor, mode Legion) dan GPU (Hybrid Mode) memakai modul kernel komunitas [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux). BIOS `HHCN` (Legion 5 15ACH6) ada di daftar modelnya. Tanpa modul, kedua tab hanya menampilkan petunjuk dan sisa aplikasi tetap jalan.
+Halaman **Kipas & suhu** (kurva kipas, sensor, mode Legion) dan **Grafis** (Hybrid Mode) memakai modul kernel komunitas [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux). BIOS `HHCN` (Legion 5 15ACH6) ada di daftar modelnya. Tanpa modul, kedua tab hanya menampilkan petunjuk dan sisa aplikasi tetap jalan.
 ```bash
 sudo apt install dkms build-essential linux-headers-$(uname -r) lm-sensors git
 git clone https://github.com/johnfanv2/LenovoLegionLinux.git ~/LenovoLegionLinux
@@ -61,7 +61,7 @@ ls -l $H/pwm1_auto_point1_pwm /sys/module/legion_laptop/drivers/platform:legion/
 **Cek konsistensi Hybrid Mode sekali setelah modul terpasang.** Saat ini hanya NVIDIA yang terlihat di `lspci` (iGPU disembunyikan = mode dGPU-only), jadi `cat /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/gsync` (kernel ≥7.0: folder `legion`) seharusnya `0`. Bila hasilnya `1`, arti nilainya terbalik di model ini: jangan pakai tombol Hybrid dan laporkan.
 
 ### Pertahankan kurva kipas
-Firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau setelah reboot. Di tab Fan, centang **Pertahankan kurva ini**: kurva yang disimpan akan diterapkan ulang otomatis setiap kali Anda kembali ke **mode tempat kurva itu disimpan** (Quiet/Balanced/Performance, sama dengan Fn+Q), selama aplikasi berjalan (aktifkan autostart agar jalan sejak login). Di mode lain aplikasi tidak menyentuh kurva, karena firmware punya kurva bawaan terpisah per mode.
+Firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau setelah reboot. Di halaman Kipas & suhu, aktifkan saklar **Pertahankan kurva ini**: kurva yang disimpan akan diterapkan ulang otomatis setiap kali Anda kembali ke **mode tempat kurva itu disimpan** (Quiet/Balanced/Performance, sama dengan Fn+Q), selama aplikasi berjalan (aktifkan autostart agar jalan sejak login). Di mode lain aplikasi tidak menyentuh kurva, karena firmware punya kurva bawaan terpisah per mode.
 - Alur: ubah angka → **Terapkan** (kurva ikut tersimpan) → kurva tersimpan untuk mode yang sedang aktif.
 - Kurva tersimpan di `~/.config/legion-control/fancurve.conf` (teks biasa; hapus file atau lepas centang untuk berhenti).
 - Hardware membulatkan pwm ke satuan 100 rpm (≈2,55 pwm), jadi angka yang terbaca bisa selisih 1 dari yang ditulis; itu normal.
@@ -76,7 +76,17 @@ Lalu muat ulang shell: di X11 tekan `Alt+F2`, ketik `r`, Enter (Wayland: logout-
 KDE/XFCE/Cinnamon mendukung tray bawaan.
 
 ### Autostart
-Centang "Mulai otomatis saat login" di aplikasi. Ini membuat `~/.config/autostart/legion-control.desktop` yang menjalankan `legion-control --hidden` (langsung ke tray; bila tray tidak ada, jendela tetap ditampilkan). Binary yang dipakai adalah yang sedang berjalan, jadi **pasang dulu ke lokasi tetap** (lihat Production) sebelum mencentang.
+Nyalakan saklar "Mulai saat login" di dasar sidebar. Ini membuat `~/.config/autostart/legion-control.desktop` yang menjalankan `legion-control --hidden` (langsung ke tray; bila tray tidak ada, jendela tetap ditampilkan). Binary yang dipakai adalah yang sedang berjalan, jadi **pasang dulu ke lokasi tetap** (lihat Production) sebelum mencentang.
+
+### Alat bantu desain (opsional)
+Flag baris perintah untuk iterasi tampilan tanpa menyentuh hardware:
+```bash
+cargo run --release -- --tab fan                 # buka langsung halaman: umum | fan | gpu
+cargo run --release -- --size 640x720            # uji layout sempit (di bawah 760px jadi satu kolom)
+cargo run --release -- --no-module               # lihat keadaan kosong "Modul Legion belum terpasang"
+cargo run --release -- --shot /tmp/layar.ppm --tab fan   # simpan tangkap layar (PPM) lalu keluar
+```
+Font **Outfit** dan **Geist Mono** (lisensi OFL, teks lisensi di `assets/fonts/`) ditanam ke dalam binary, jadi tidak ada unduhan saat build maupun jalan.
 
 ## Production
 ```bash
@@ -95,7 +105,7 @@ Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di st
 | Saklar tertulis "tidak tersedia" | Bukan Lenovo IdeaPad/Legion, atau path `VPC2004:00` beda: `ls /sys/bus/platform/drivers/ideapad_acpi/` |
 | Tombol profil tidak ada yang aktif | `power-profiles-daemon` belum jalan: `systemctl status power-profiles-daemon` |
 | Cek firmware: "fwupdmgr tidak bisa dijalankan" | `sudo apt install fwupd` |
-| Tab Fan/GPU: "Modul belum terpasang" | Ikuti bagian Modul LenovoLegionLinux; cek `lsmod | grep legion` |
+| Kipas/Grafis: "Modul Legion belum terpasang" | Ikuti bagian Modul LenovoLegionLinux; cek `lsmod | grep legion` |
 | `insmod ... Key was rejected` | Secure Boot aktif; nonaktifkan atau tandatangani modul (`mokutil --sb-state`) |
 | `make` gagal: `/lib/modules/.../build` tidak ada | `sudo apt install --reinstall linux-headers-$(uname -r)` |
 | Kurva kembali ke default sendiri | Firmware memuat ulang kurva saat mode diganti (Fn+Q) atau terlalu lama; klik Terapkan lagi |
