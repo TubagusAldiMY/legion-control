@@ -3,11 +3,15 @@
 //! UI egui satu jendela. Semua akses sistem ada di `hw.rs`; file ini hanya
 //! menggambar state dan meneruskan klik ke `hw`.
 
+mod autostart;
 mod hw;
+mod tray;
 
 use eframe::egui;
+use autostart::Autostart;
 use hw::{Camera, Sysfs, Toggle, PROFILES, TOGGLES};
 use std::{sync::mpsc, thread};
+use tray::TrayEvent;
 use tracing::{error, info};
 
 struct App {
@@ -22,10 +26,14 @@ struct App {
     /// Hasil cek firmware dikirim dari thread kerja ke UI lewat channel.
     fw_rx: Option<mpsc::Receiver<String>>,
     fw_out: String,
+    /// `Some` bila tray aktif; menutup jendela lalu hanya menyembunyikannya.
+    tray_rx: Option<mpsc::Receiver<TrayEvent>>,
+    quitting: bool,
+    autostart: Option<Autostart>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(ctx: &egui::Context, hidden: bool) -> Self {
         let mut app = Self {
             sysfs: Sysfs::new(hw::DEFAULT_BASE),
             camera: Camera::find(std::path::Path::new("/sys/bus/usb/devices")),
@@ -35,7 +43,17 @@ impl App {
             status: String::new(),
             fw_rx: None,
             fw_out: String::new(),
+            tray_rx: tray::spawn(ctx.clone()),
+            quitting: false,
+            autostart: Autostart::default_dir().map(Autostart::new),
         };
+        // `--hidden` = mulai di tray. `with_visible(false)` saja tidak cukup: eframe menampilkan
+        // jendela lagi di frame pertama, jadi sembunyikan eksplisit. Tanpa tray tak ada cara
+        // membukanya kembali, jadi tampilkan saja.
+        if hidden {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(app.tray_rx.is_none()));
+            ctx.request_repaint();
+        }
         app.refresh();
         app
     }
@@ -81,6 +99,29 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Dipanggil juga saat jendela tersembunyi, jadi event tray tetap terproses.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(rx) = &self.tray_rx {
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    TrayEvent::Show => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayEvent::Quit => {
+                        self.quitting = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+            // Tombol X: sembunyikan ke tray, kecuali user memilih "Keluar".
+            if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Ambil hasil cek firmware bila thread kerja sudah selesai.
         if let Some(rx) = &self.fw_rx {
@@ -162,6 +203,21 @@ impl eframe::App for App {
             }
 
             ui.separator();
+            if let Some(a) = &self.autostart {
+                let mut on = a.is_enabled();
+                if ui.checkbox(&mut on, "Mulai otomatis saat login").changed() {
+                    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+                    self.status = match a.set(on, &exe) {
+                        Ok(()) => format!("Autostart: {}", if on { "ON" } else { "OFF" }),
+                        Err(e) => format!("Gagal ubah autostart: {e}"),
+                    };
+                }
+            }
+            ui.weak(if self.tray_rx.is_some() {
+                "Tray aktif: tombol X menyembunyikan jendela."
+            } else {
+                "Tray tidak tersedia (GNOME: pasang ekstensi AppIndicator)."
+            });
             ui.weak(&self.status);
         });
     }
@@ -175,9 +231,10 @@ fn main() -> eframe::Result {
         .init();
     info!("legion-control start");
 
+    let hidden = std::env::args().any(|a| a == "--hidden");
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 460.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 520.0]).with_visible(!hidden),
         ..Default::default()
     };
-    eframe::run_native("Legion Control", opts, Box::new(|_| Ok(Box::new(App::new()))))
+    eframe::run_native("Legion Control", opts, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, hidden)))))
 }

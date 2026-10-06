@@ -30,6 +30,18 @@ ls -l /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode /sys/b
 Keduanya harus `-rw-rw-r-- root plugdev` (`1-3` = kamera bawaan; nomornya bisa beda: cari yang `product`-nya "Integrated Camera"). Cek sintaks aturan: `udevadm verify udev/99-legion-control.rules`.
 Izin ini hilang saat reboot lalu dipasang ulang otomatis oleh aturan udev.
 
+### Tray icon (GNOME)
+GNOME tidak punya tray bawaan. Tanpa ekstensi, aplikasi tetap jalan sebagai jendela biasa (tombol X = keluar).
+```bash
+sudo apt install gnome-shell-extension-appindicator
+gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
+```
+Lalu muat ulang shell: di X11 tekan `Alt+F2`, ketik `r`, Enter (Wayland: logout-login). Setelah itu ikon muncul di panel atas, tombol X hanya menyembunyikan jendela, dan "Keluar" ada di menu ikon.
+KDE/XFCE/Cinnamon mendukung tray bawaan.
+
+### Autostart
+Centang "Mulai otomatis saat login" di aplikasi. Ini membuat `~/.config/autostart/legion-control.desktop` yang menjalankan `legion-control --hidden` (langsung ke tray; bila tray tidak ada, jendela tetap ditampilkan). Binary yang dipakai adalah yang sedang berjalan, jadi **pasang dulu ke lokasi tetap** (lihat Production) sebelum mencentang.
+
 ## Production
 ```bash
 cargo build --release
@@ -47,4 +59,6 @@ Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di st
 | Saklar tertulis "tidak tersedia" | Bukan Lenovo IdeaPad/Legion, atau path `VPC2004:00` beda: `ls /sys/bus/platform/drivers/ideapad_acpi/` |
 | Tombol profil tidak ada yang aktif | `power-profiles-daemon` belum jalan: `systemctl status power-profiles-daemon` |
 | Cek firmware: "fwupdmgr tidak bisa dijalankan" | `sudo apt install fwupd` |
+| Ikon tray tidak muncul di GNOME | Ekstensi AppIndicator belum terpasang/aktif, lihat bagian Tray icon |
+| Autostart tidak jalan setelah binary dipindah | Matikan lalu nyalakan lagi centang autostart agar path diperbarui |
 | Jendela tidak muncul | Cek `echo $DISPLAY`/`$WAYLAND_DISPLAY`; app butuh sesi grafis |
