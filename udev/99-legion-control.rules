@@ -1,0 +1,3 @@
+# Beri grup plugdev izin tulis ke saklar ideapad_acpi supaya legion-control
+# tidak perlu root. Dipasang manual: lihat how-to-run.md.
+ACTION=="add|bind", DRIVER=="ideapad_acpi", RUN+="/bin/sh -c 'for f in conservation_mode fn_lock camera_power usb_charging; do chgrp plugdev /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$f && chmod g+w /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$f; done'"
