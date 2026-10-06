@@ -10,7 +10,7 @@
 //! sejak login.
 
 use crate::hw::Boost;
-use crate::legion::{self, Legion, Point, PowerLimits};
+use crate::legion::{self, Legion, Point};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -93,14 +93,12 @@ impl Saved {
     }
 }
 
-/// Pengaturan daya yang dijaga: batas daya CPU dan/atau turbo boost. `base` = nilai asli
-/// firmware, disimpan agar tetap bisa dipulihkan dan menjadi batas atas validasi walau aplikasi
-/// dibuka ulang saat batas sudah diturunkan. `limits`/`boost` kosong = tidak dijaga.
+/// Pengaturan daya yang dijaga: saat ini hanya turbo boost. (Batas daya CPU sempat ada tetapi
+/// dihapus: diuji di hardware, nilai yang ditulis tidak mengubah frekuensi maupun suhu.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerSaved {
     pub enabled: bool,
-    pub base: PowerLimits,
-    pub limits: Option<PowerLimits>,
+    /// `Some(false)` = jaga boost tetap mati; `None` = tidak dijaga.
     pub boost: Option<bool>,
 }
 
@@ -108,29 +106,19 @@ impl PowerSaved {
     /// Format teks (`power.conf`):
     /// ```text
     /// enabled=1
-    /// base=70 88
-    /// limits=45 54
     /// boost=0
     /// ```
     pub fn render(&self) -> String {
-        let mut out = format!("enabled={}\nbase={} {}\n", u8::from(self.enabled), self.base.long_w, self.base.short_w);
-        if let Some(l) = self.limits {
-            out += &format!("limits={} {}\n", l.long_w, l.short_w);
-        }
+        let mut out = format!("enabled={}\n", u8::from(self.enabled));
         if let Some(b) = self.boost {
             out += &format!("boost={}\n", u8::from(b));
         }
         out
     }
 
-    /// `None` bila file rusak; file rusak tidak boleh menerapkan nilai setengah-jadi.
+    /// `None` bila file rusak. Kunci tak dikenal (mis. `base=`/`limits=` dari versi lama) diabaikan.
     pub fn parse(text: &str) -> Option<Self> {
-        let pair = |v: &str| -> Option<PowerLimits> {
-            let mut it = v.split_whitespace().map(|n| n.parse::<u32>());
-            let (a, b) = (it.next()?.ok()?, it.next()?.ok()?);
-            it.next().is_none().then_some(PowerLimits { long_w: a, short_w: b })
-        };
-        let (mut enabled, mut base, mut limits, mut boost) = (None, None, None, None);
+        let (mut enabled, mut boost) = (None, None);
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 if line.trim().is_empty() {
@@ -140,13 +128,11 @@ impl PowerSaved {
             };
             match k {
                 "enabled" => enabled = Some(v.trim() == "1"),
-                "base" => base = Some(pair(v)?),
-                "limits" => limits = Some(pair(v)?),
                 "boost" => boost = Some(v.trim() == "1"),
                 _ => {}
             }
         }
-        Some(Self { enabled: enabled?, base: base?, limits, boost })
+        Some(Self { enabled: enabled?, boost })
     }
 
     pub fn load(path: &Path) -> Option<Self> {
@@ -168,27 +154,18 @@ pub fn power_path(curve_path: &Path) -> PathBuf {
     curve_path.with_file_name("power.conf")
 }
 
-/// Satu putaran penjagaan daya. `Ok(true)` = ada yang ditulis ulang.
-pub fn tick_power(l: &Legion, boost: Option<&Boost>, saved: &PowerSaved) -> io::Result<bool> {
+/// Satu putaran penjagaan daya. `Ok(true)` = boost ditulis ulang.
+pub fn tick_power(boost: Option<&Boost>, saved: &PowerSaved) -> io::Result<bool> {
     if !saved.enabled {
         return Ok(false);
     }
-    let mut changed = false;
     if let (Some(want), Some(b)) = (saved.boost, boost) {
         if b.get()? != want {
             b.set(want)?;
-            changed = true;
+            return Ok(true);
         }
     }
-    if let Some(want) = saved.limits {
-        if l.power_limits() != Some(want) {
-            // Validasi ulang terhadap `base`: file bisa diedit tangan.
-            legion::validate_power(want, saved.base).map_err(|m| io::Error::new(io::ErrorKind::InvalidData, m))?;
-            l.set_power_limits(want)?;
-            changed = true;
-        }
-    }
-    Ok(changed)
+    Ok(false)
 }
 
 /// `$XDG_CONFIG_HOME/legion-control/fancurve.conf` atau `~/.config/legion-control/fancurve.conf`.
@@ -269,7 +246,7 @@ fn spawn_with(path: PathBuf, lock: &Path) -> Started {
         let power_file = power_path(&path);
         loop {
             if let Some(ps) = PowerSaved::load(&power_file) {
-                match tick_power(&l, boost.as_ref(), &ps) {
+                match tick_power(boost.as_ref(), &ps) {
                     Ok(true) => {
                         info!("pengaturan daya diterapkan ulang");
                         last_power_err = None;
@@ -409,60 +386,43 @@ mod tests {
         fs::remove_file(path).ok();
     }
 
-    fn pl(l: u32, s: u32) -> PowerLimits {
-        PowerLimits { long_w: l, short_w: s }
-    }
-
-    /// Sanity: format power.conf bolak-balik, dengan dan tanpa bagian opsional.
+    /// Sanity: format power.conf bolak-balik; kunci lama (`base`, `limits`) diabaikan.
     #[test]
     fn power_roundtrip() {
-        for ps in [
-            PowerSaved { enabled: true, base: pl(70, 88), limits: Some(pl(45, 54)), boost: Some(false) },
-            PowerSaved { enabled: false, base: pl(70, 88), limits: None, boost: None },
-        ] {
+        for ps in [PowerSaved { enabled: true, boost: Some(false) }, PowerSaved { enabled: false, boost: None }] {
             assert_eq!(PowerSaved::parse(&ps.render()), Some(ps));
         }
+        let old = PowerSaved::parse("enabled=1\nbase=70 88\nlimits=45 54\nboost=0\n").unwrap();
+        assert_eq!(old, PowerSaved { enabled: true, boost: Some(false) });
     }
 
     /// Edge: power.conf rusak ditolak seluruhnya.
     #[test]
     fn power_parse_rejects_garbage() {
-        for bad in ["", "enabled=1\n", "base=70 88\n", "enabled=1\nbase=70\n", "enabled=1\nbase=70 88\nlimits=x y\n", "sampah"] {
+        for bad in ["", "boost=0\n", "sampah"] {
             assert_eq!(PowerSaved::parse(bad), None, "{bad:?}");
         }
     }
 
-    /// Perilaku inti `tick_power` (table-driven): batas daya dan boost.
+    /// Perilaku inti `tick_power` (table-driven): boost dijaga tetap mati.
     #[test]
     fn tick_power_behaviour() {
-        let (l, root) = crate::legion::tests::fake("keeper-power"); // fake: 70/88 W
-        let boost_file = root.join("boost");
-        fs::write(&boost_file, "1\n").unwrap();
-        let boost = Boost::find(&boost_file).unwrap();
-        let ps = |enabled, limits, b| PowerSaved { enabled, base: pl(70, 88), limits, boost: b };
+        let dir = std::env::temp_dir().join(format!("legion-keeper-boost-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("boost");
+        fs::write(&file, "1\n").unwrap();
+        let boost = Boost::find(&file).unwrap();
+        let ps = |enabled, b| PowerSaved { enabled, boost: b };
 
-        // Dinonaktifkan: diam.
-        assert!(!tick_power(&l, Some(&boost), &ps(false, Some(pl(45, 54)), Some(false))).unwrap());
-        assert_eq!(l.power_limits(), Some(pl(70, 88)));
-        // Aktif: batas turun dan boost mati; putaran berikutnya diam.
-        assert!(tick_power(&l, Some(&boost), &ps(true, Some(pl(45, 54)), Some(false))).unwrap());
-        assert_eq!(l.power_limits(), Some(pl(45, 54)));
+        assert!(!tick_power(Some(&boost), &ps(false, Some(false))).unwrap(), "nonaktif: diam");
+        assert!(boost.get().unwrap());
+        assert!(tick_power(Some(&boost), &ps(true, Some(false))).unwrap(), "aktif: boost dimatikan");
         assert!(!boost.get().unwrap());
-        assert!(!tick_power(&l, Some(&boost), &ps(true, Some(pl(45, 54)), Some(false))).unwrap());
-        // Firmware/boot mengembalikan nilai (simulasi): diterapkan ulang.
-        l.set_power_limits(pl(70, 88)).unwrap();
-        boost.set(true).unwrap();
-        assert!(tick_power(&l, Some(&boost), &ps(true, Some(pl(45, 54)), Some(false))).unwrap());
-        // Hanya boost yang dijaga: batas daya tidak disentuh.
-        l.set_power_limits(pl(60, 70)).unwrap();
-        boost.set(true).unwrap();
-        assert!(tick_power(&l, Some(&boost), &ps(true, None, Some(false))).unwrap());
-        assert_eq!(l.power_limits(), Some(pl(60, 70)));
-        // Simpanan tidak aman (melebihi base): galat, tidak menulis.
-        assert!(tick_power(&l, Some(&boost), &ps(true, Some(pl(90, 100)), None)).is_err());
-        assert_eq!(l.power_limits(), Some(pl(60, 70)));
-        // Tanpa saklar boost di sistem: bagian boost dilewati tanpa galat.
-        assert!(!tick_power(&l, None, &ps(true, None, Some(false))).unwrap());
-        fs::remove_dir_all(root).ok();
+        assert!(!tick_power(Some(&boost), &ps(true, Some(false))).unwrap(), "sudah sesuai: diam");
+        boost.set(true).unwrap(); // reboot/tidur mengembalikan boost (simulasi)
+        assert!(tick_power(Some(&boost), &ps(true, Some(false))).unwrap(), "diterapkan ulang");
+        assert!(!tick_power(Some(&boost), &ps(true, None)).unwrap(), "boost tidak dijaga: diam");
+        assert!(!tick_power(None, &ps(true, Some(false))).unwrap(), "tanpa saklar boost: dilewati");
+        fs::remove_dir_all(dir).ok();
     }
 }

@@ -5,7 +5,7 @@
 
 use crate::keeper::{self, PowerSaved, Saved};
 use crate::hw::Boost;
-use crate::legion::{self, Gpu, Legion, Point, PowerLimits, Sensors};
+use crate::legion::{self, Gpu, Legion, Point, Sensors};
 use crate::theme::{self, ButtonKind};
 use crate::graph;
 use eframe::egui::{self, Layout, RichText, Sense, Stroke, Vec2};
@@ -45,12 +45,9 @@ pub struct Panel {
     /// Lokasi file kurva simpanan (dibaca juga oleh penjaga di thread latar).
     cfg: Option<PathBuf>,
     saved: Option<Saved>,
-    /// Batas daya CPU: nilai firmware saat dimuat (batas atas yang boleh dipakai), buffer edit,
-    /// dan status kipas penuh. Halaman Daya & panas: lihat `panel/power.rs`.
-    power_base: Option<PowerLimits>,
-    /// Pengaturan daya yang dijaga (power.conf); `base` di dalamnya = nilai asli firmware.
+    /// Pengaturan daya yang dijaga (power.conf), dan status kipas penuh. Halaman Daya & panas:
+    /// lihat `panel/power.rs`.
     power_saved: Option<PowerSaved>,
-    power_edit: Option<PowerLimits>,
     fullspeed: Option<bool>,
     boost: Option<Boost>,
     boost_on: Option<bool>,
@@ -88,9 +85,7 @@ impl Panel {
             status: String::new(),
             cfg,
             saved,
-            power_base: None,
             power_saved: cfg_for_power,
-            power_edit: None,
             fullspeed: None,
             boost: Boost::find(Boost::DEFAULT_PATH),
             boost_on: None,
@@ -114,15 +109,6 @@ impl Panel {
                 self.curve = c;
             }
             Err(e) => self.status = format!("Gagal baca fan curve: {e}"),
-        }
-        if let Some(pl) = l.power_limits() {
-            // Batas atas = nilai ASLI firmware: yang tersimpan di power.conf bila ada (aplikasi bisa
-            // dibuka saat batas sudah diturunkan), kalau tidak nilai saat ini. Firmware tidak
-            // mengubah batas daya saat mode berganti, jadi tidak perlu diatur ulang per mode.
-            if self.power_base.is_none() {
-                self.power_base = Some(self.power_saved.as_ref().map_or(pl, |s| s.base));
-            }
-            self.power_edit = Some(pl);
         }
         self.fullspeed = l.fan_fullspeed().ok();
         self.ranges = l.cpu_ranges();
@@ -537,34 +523,22 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// Simpanan daya: mengikuti keadaan sekarang (batas di bawah nilai asli), dan dibaca ulang
-    /// apa adanya oleh penjaga.
+    /// Simpanan daya: mengikuti keadaan boost sekarang dan bisa dimatikan.
     #[test]
     fn power_saved_snapshot() {
         let (l, root) = crate::legion::tests::fake("panel-power");
         let cfg = root.join("cfg").join("fancurve.conf");
         let mut p = Panel::with(Some(l), vec![], Some(cfg.clone()));
-        assert_eq!(p.power_base, Some(PowerLimits { long_w: 70, short_w: 88 }));
         let file = keeper::power_path(&cfg);
 
-        p.save_power(true); // batas = nilai asli -> tidak ada yang dijaga selain boost
-        let s = PowerSaved::load(&file).unwrap();
-        assert!(s.enabled && s.limits.is_none());
-
-        p.legion.as_ref().unwrap().set_power_limits(PowerLimits { long_w: 50, short_w: 60 }).unwrap();
+        p.boost_on = Some(false); // boost sedang dimatikan -> dijaga
         p.save_power(true);
-        let s = PowerSaved::load(&file).unwrap();
-        assert_eq!(s.limits, Some(PowerLimits { long_w: 50, short_w: 60 }));
-        assert_eq!(s.base, PowerLimits { long_w: 70, short_w: 88 }, "nilai asli tetap");
-
+        assert_eq!(PowerSaved::load(&file), Some(PowerSaved { enabled: true, boost: Some(false) }));
+        p.boost_on = Some(true); // boost menyala -> tidak ada yang dijaga
+        p.save_power(true);
+        assert_eq!(PowerSaved::load(&file), Some(PowerSaved { enabled: true, boost: None }));
         p.save_power(false);
         assert!(!PowerSaved::load(&file).unwrap().enabled);
-        // Panel baru memakai base tersimpan, bukan nilai yang sudah diturunkan.
-        let (l2, root2) = crate::legion::tests::fake("panel-power2");
-        l2.set_power_limits(PowerLimits { long_w: 50, short_w: 60 }).unwrap();
-        let p2 = Panel::with(Some(l2), vec![], Some(cfg));
-        assert_eq!(p2.power_base, Some(PowerLimits { long_w: 70, short_w: 88 }));
         std::fs::remove_dir_all(root).ok();
-        std::fs::remove_dir_all(root2).ok();
     }
 }

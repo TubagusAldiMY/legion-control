@@ -15,7 +15,7 @@ Tracing OpenTelemetry **N/A** (bukan microservice); `request_id` juga N/A karena
 | `src/legion.rs` | Akses modul LenovoLegionLinux (sensor, fan curve, powermode, gsync) + `validate_curve` + daftar GPU. Path diinjeksi supaya bisa dites |
 | `src/keeper.rs` | Penjaga kurva kipas: thread latar yang menerapkan ulang kurva simpanan (`~/.config/legion-control/fancurve.conf`) saat mode daya sama dengan mode tempat kurva disimpan |
 | `src/panel.rs` | State & tampilan halaman Kipas & suhu dan Grafis |
-| `src/panel/power.rs` | Halaman Daya & panas: slider batas daya CPU, saklar boost dan kipas penuh |
+| `src/panel/power.rs` | Halaman Daya & panas: saklar turbo boost (+ penjagaan) dan kipas penuh |
 | `src/tray.rs` | Ikon tray (StatusNotifierItem via `ksni`): menu Tampilkan/Keluar; gagal → mode jendela biasa |
 | `src/autostart.rs` | Tulis/hapus `~/.config/autostart/legion-control.desktop` |
 | `udev/99-legion-control.rules` | Aturan udev yang memberi grup `plugdev` izin tulis ke file sysfs |
@@ -52,7 +52,7 @@ Sumber kebenaran selalu kernel, bukan variabel di UI, sehingga tampilan tetap be
 Penjaga tunggal: `keeper::spawn` mengambil kunci `flock` di `$XDG_RUNTIME_DIR/legion-control-keeper.lock`; pemilik pertama menjaga, lainnya melewati. Kunci dilepas OS saat proses berakhir, jadi tidak pernah basi.
 
 ## Alur halaman Daya & panas
-`Panel::reload` membaca `cpu_longterm_powerlimit`/`cpu_shortterm_powerlimit` (`power_edit` = buffer; `power_base` = nilai ASLI firmware: dari `power.conf` bila ada, kalau tidak nilai saat ini), `fan_fullspeed`, `cpufreq/boost`, dan governor/EPP CPU0. **Terapkan** aktif bila `validate_power(edit, base)` lolos (lantai 25/30 W, short ≥ long, tidak melebihi asli); `set_power_limits` menulis dengan urutan yang menjaga short ≥ long. **Kembalikan ke bawaan** menulis `base` (firmware tidak memuat ulang batas daya saat mode berganti, jadi tidak bisa memakai trik `powermode`) dan menyalakan boost. Saklar **Pertahankan** menyimpan keadaan sekarang ke `power.conf` (`keeper::PowerSaved`); penjaga memeriksa tiap 2 detik lewat `tick_power`. Kipas penuh hanya aktif di mode Custom (255).
+`Panel::reload` membaca `cpufreq/boost`, governor/EPP CPU0, dan `fan_fullspeed`. Saklar **Turbo boost** menulis `cpufreq/boost`. Saklar **Pertahankan** menyimpan keadaan boost ke `power.conf` (`keeper::PowerSaved`: dijaga hanya bila boost dimatikan); penjaga memeriksa tiap 2 detik lewat `tick_power` dan mematikan boost lagi bila dikembalikan (reboot/tidur). **Kipas penuh** hanya aktif di mode Custom (255). Batas daya CPU tidak ada: lihat penjelasan (diuji tidak berpengaruh).
 
 ## Alur penjaga kurva
 `App::new` → `keeper::spawn` (no-op bila modul tidak ada) → thread `fan-keeper`, tiap 2 detik: baca `fancurve.conf` → bila `enabled`, mode daya = `mode` simpanan, dan kurva hardware berbeda (toleransi ±2 pwm karena pembulatan hardware) → `validate_curve(simpanan, peak)` → `set_curve`. UI tidak berkomunikasi lewat channel: ia hanya menulis file (atomik: tulis `.tmp` lalu `rename`) dan penjaga membacanya di putaran berikutnya.

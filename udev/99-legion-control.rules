@@ -10,8 +10,8 @@ ACTION=="add|bind", DRIVER=="ideapad_acpi", RUN+="/bin/sh -c 'for f in conservat
 ACTION=="add", SUBSYSTEM=="video4linux", SUBSYSTEMS=="usb", ATTRS{removable}=="fixed", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/../../../authorized; chmod g+w /sys%p/../../../authorized'"
 
 # 3. Modul LenovoLegionLinux (hanya berlaku bila modul terpasang/dimuat).
-#    powermode, gsync, batas daya CPU, dan fan_fullspeed ada di device platform; titik fan curve ada di hwmon `legion_hwmon`.
-ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="legion", RUN+="/bin/sh -c 'for f in powermode gsync cpu_longterm_powerlimit cpu_shortterm_powerlimit fan_fullspeed; do chgrp plugdev /sys%p/$$f; chmod g+w /sys%p/$$f; done'"
+#    powermode, gsync, dan fan_fullspeed ada di device platform; titik fan curve ada di hwmon `legion_hwmon`.
+ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="legion", RUN+="/bin/sh -c 'for f in powermode gsync fan_fullspeed; do chgrp plugdev /sys%p/$$f; chmod g+w /sys%p/$$f; done'"
 ACTION=="add", SUBSYSTEM=="hwmon", ATTR{name}=="legion_hwmon", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/pwm*_auto_point*; chmod g+w /sys%p/pwm*_auto_point*'"
 
 # 4. Turbo boost CPU (cpufreq/boost). Atribut ini ada di folder cpufreq (bukan device), jadi
