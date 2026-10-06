@@ -5,16 +5,29 @@
 
 mod autostart;
 mod hw;
+mod legion;
+mod panel;
 mod tray;
 
 use eframe::egui;
 use autostart::Autostart;
 use hw::{Camera, Sysfs, Toggle, PROFILES, TOGGLES};
+use panel::Panel;
 use std::{sync::mpsc, thread};
 use tray::TrayEvent;
 use tracing::{error, info};
 
+/// Tab yang sedang dibuka.
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Umum,
+    Fan,
+    Gpu,
+}
+
 struct App {
+    tab: Tab,
+    panel: Panel,
     sysfs: Sysfs,
     camera: Option<Camera>,
     camera_on: Option<bool>,
@@ -35,6 +48,8 @@ struct App {
 impl App {
     fn new(ctx: &egui::Context, hidden: bool) -> Self {
         let mut app = Self {
+            tab: Tab::Umum,
+            panel: Panel::new(),
             sysfs: Sysfs::new(hw::DEFAULT_BASE),
             camera: Camera::find(std::path::Path::new("/sys/bus/usb/devices")),
             camera_on: None,
@@ -96,6 +111,92 @@ impl App {
         }
         self.refresh();
     }
+
+    /// Tab "Umum": saklar hardware, kamera, mode performa, firmware, autostart.
+    fn general_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("Hardware");
+        // Salin dulu supaya `self` bebas dipinjam mutable saat klik.
+        for (t, state) in self.toggles.clone() {
+            match state {
+                Ok(mut on) => {
+                    if ui.checkbox(&mut on, t.label()).on_hover_text(t.hint()).changed() {
+                        self.set_toggle(t, on);
+                    }
+                }
+                Err(e) => {
+                    ui.add_enabled(false, egui::Label::new(format!("{}: tidak tersedia ({e})", t.label())));
+                }
+            }
+        }
+
+        match self.camera_on {
+            Some(mut on) => {
+                if ui.checkbox(&mut on, "Kamera").on_hover_text("Matikan kamera bawaan (putus USB-nya)").changed() {
+                    self.set_camera(on);
+                }
+            }
+            None => {
+                ui.add_enabled(false, egui::Label::new("Kamera: tidak ditemukan"));
+            }
+        }
+
+        ui.separator();
+        ui.label("Mode performa");
+        ui.horizontal(|ui| {
+            for p in PROFILES {
+                let active = self.profile.as_deref() == Some(p);
+                if ui.selectable_label(active, p).clicked() && !active {
+                    self.status = match hw::set_profile(p) {
+                        Ok(()) => format!("Profil: {p}"),
+                        Err(e) => format!("Gagal ganti profil: {e}"),
+                    };
+                    self.refresh();
+                }
+            }
+        });
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            let busy = self.fw_rx.is_some();
+            if ui.add_enabled(!busy, egui::Button::new("Cek update firmware")).clicked() {
+                let (tx, rx) = mpsc::channel();
+                self.fw_rx = Some(rx);
+                self.fw_out.clear();
+                thread::spawn(move || {
+                    let _ = tx.send(hw::check_firmware());
+                });
+            }
+            if busy {
+                ui.spinner();
+            }
+            if ui.button("Refresh").clicked() {
+                self.refresh();
+            }
+        });
+        if !self.fw_out.is_empty() {
+            egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                ui.monospace(&self.fw_out);
+            });
+        }
+
+        ui.separator();
+        if let Some(a) = &self.autostart {
+            let mut on = a.is_enabled();
+            if ui.checkbox(&mut on, "Mulai otomatis saat login").changed() {
+                let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+                self.status = match a.set(on, &exe) {
+                    Ok(()) => format!("Autostart: {}", if on { "ON" } else { "OFF" }),
+                    Err(e) => format!("Gagal ubah autostart: {e}"),
+                };
+            }
+        }
+        ui.weak(if self.tray_rx.is_some() {
+            "Tray aktif: tombol X menyembunyikan jendela."
+        } else {
+            "Tray tidak tersedia (GNOME: pasang ekstensi AppIndicator)."
+        });
+        ui.weak(&self.status);
+    }
 }
 
 impl eframe::App for App {
@@ -135,90 +236,17 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Legion Control");
-            ui.separator();
-
-            ui.label("Hardware");
-            // Salin dulu supaya `self` bebas dipinjam mutable saat klik.
-            for (t, state) in self.toggles.clone() {
-                match state {
-                    Ok(mut on) => {
-                        if ui.checkbox(&mut on, t.label()).on_hover_text(t.hint()).changed() {
-                            self.set_toggle(t, on);
-                        }
-                    }
-                    Err(e) => {
-                        ui.add_enabled(false, egui::Label::new(format!("{}: tidak tersedia ({e})", t.label())));
-                    }
-                }
-            }
-
-            match self.camera_on {
-                Some(mut on) => {
-                    if ui.checkbox(&mut on, "Kamera").on_hover_text("Matikan kamera bawaan (putus USB-nya)").changed() {
-                        self.set_camera(on);
-                    }
-                }
-                None => {
-                    ui.add_enabled(false, egui::Label::new("Kamera: tidak ditemukan"));
-                }
-            }
-
-            ui.separator();
-            ui.label("Mode performa");
             ui.horizontal(|ui| {
-                for p in PROFILES {
-                    let active = self.profile.as_deref() == Some(p);
-                    if ui.selectable_label(active, p).clicked() && !active {
-                        self.status = match hw::set_profile(p) {
-                            Ok(()) => format!("Profil: {p}"),
-                            Err(e) => format!("Gagal ganti profil: {e}"),
-                        };
-                        self.refresh();
-                    }
+                for (t, name) in [(Tab::Umum, "Umum"), (Tab::Fan, "Fan"), (Tab::Gpu, "GPU")] {
+                    ui.selectable_value(&mut self.tab, t, name);
                 }
             });
-
             ui.separator();
-            ui.horizontal(|ui| {
-                let busy = self.fw_rx.is_some();
-                if ui.add_enabled(!busy, egui::Button::new("Cek update firmware")).clicked() {
-                    let (tx, rx) = mpsc::channel();
-                    self.fw_rx = Some(rx);
-                    self.fw_out.clear();
-                    thread::spawn(move || {
-                        let _ = tx.send(hw::check_firmware());
-                    });
-                }
-                if busy {
-                    ui.spinner();
-                }
-                if ui.button("Refresh").clicked() {
-                    self.refresh();
-                }
-            });
-            if !self.fw_out.is_empty() {
-                egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                    ui.monospace(&self.fw_out);
-                });
+            match self.tab {
+                Tab::Umum => self.general_ui(ui),
+                Tab::Fan => self.panel.fan_ui(ui),
+                Tab::Gpu => self.panel.gpu_ui(ui),
             }
-
-            ui.separator();
-            if let Some(a) = &self.autostart {
-                let mut on = a.is_enabled();
-                if ui.checkbox(&mut on, "Mulai otomatis saat login").changed() {
-                    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-                    self.status = match a.set(on, &exe) {
-                        Ok(()) => format!("Autostart: {}", if on { "ON" } else { "OFF" }),
-                        Err(e) => format!("Gagal ubah autostart: {e}"),
-                    };
-                }
-            }
-            ui.weak(if self.tray_rx.is_some() {
-                "Tray aktif: tombol X menyembunyikan jendela."
-            } else {
-                "Tray tidak tersedia (GNOME: pasang ekstensi AppIndicator)."
-            });
-            ui.weak(&self.status);
         });
     }
 }
@@ -233,7 +261,7 @@ fn main() -> eframe::Result {
 
     let hidden = std::env::args().any(|a| a == "--hidden");
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 520.0]).with_visible(!hidden),
+        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 600.0]).with_visible(!hidden),
         ..Default::default()
     };
     eframe::run_native("Legion Control", opts, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, hidden)))))

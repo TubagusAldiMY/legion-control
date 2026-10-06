@@ -8,3 +8,8 @@ ACTION=="add|bind", DRIVER=="ideapad_acpi", RUN+="/bin/sh -c 'for f in conservat
 #    Path: video0 -> .. video4linux -> ../.. interface (1-3:1.0) -> ../../.. device (1-3).
 #    Hanya kamera yang menempel permanen (removable=fixed); webcam USB eksternal tidak tersentuh.
 ACTION=="add", SUBSYSTEM=="video4linux", SUBSYSTEMS=="usb", ATTRS{removable}=="fixed", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/../../../authorized; chmod g+w /sys%p/../../../authorized'"
+
+# 3. Modul LenovoLegionLinux (hanya berlaku bila modul terpasang/dimuat).
+#    powermode & gsync ada di device platform; titik fan curve ada di hwmon `legion_hwmon`.
+ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="legion", RUN+="/bin/sh -c 'for f in powermode gsync; do chgrp plugdev /sys%p/$$f; chmod g+w /sys%p/$$f; done'"
+ACTION=="add", SUBSYSTEM=="hwmon", ATTR{name}=="legion_hwmon", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/pwm*_auto_point*; chmod g+w /sys%p/pwm*_auto_point*'"
