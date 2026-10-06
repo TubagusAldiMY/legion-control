@@ -28,6 +28,7 @@ Sumber kebenaran selalu kernel, bukan variabel di UI, sehingga tampilan tetap be
 ## Alur tab Fan & GPU
 `Panel::new` → `Legion::detect` (folder platform `legion_laptop` + hwmon bernama `legion_hwmon`; `None` bila modul tak ada → tab hanya menampilkan petunjuk).
 - **Sensor**: dibaca tiap 1 detik saat tab Fan terbuka (`request_repaint_after`).
+- **Titik aktif**: firmware memerintahkan kecepatan titik yang sedang aktif lewat `fan1_target`/`fan2_target` (rpm). `legion::current_point` mencocokkannya ke kurva HARDWARE (`hw_curve`, dibaca ulang tiap detik, bukan buffer edit) → baris tabel ditandai ▶ dan kolom Aktif berisi K1/K2. Nomor titik asli ada di debugfs yang butuh root, jadi tidak dipakai.
 - **Fan curve**: dibaca dari `pwmY_auto_pointN_pwm` (jumlah titik = jumlah file). User mengedit buffer; **Terapkan** hanya aktif bila `validate_curve` lolos, lalu menulis semua titik dan membaca ulang. `baseline` (puncak kecepatan kurva firmware, bukan titik terakhir) hanya diset saat memuat/reset default, bukan setelah Terapkan.
 - **Reset default / ganti mode**: menulis `powermode`; firmware memuat kurva bawaan mode itu.
 - **Hybrid Mode**: `gsync` (1 = hybrid). Perubahan butuh konfirmasi dan berlaku setelah restart. Mode yang *sedang* berlaku diambil dari jumlah GPU di `/sys/bus/pci/devices`.

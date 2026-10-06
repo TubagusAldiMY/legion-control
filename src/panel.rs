@@ -18,6 +18,9 @@ pub struct Panel {
     legion: Option<Legion>,
     /// Kurva yang sedang diedit user (belum tentu sudah ditulis ke firmware).
     curve: Vec<Point>,
+    /// Kurva yang SEKARANG ada di hardware (diperbarui tiap detik); dasar pencarian titik aktif,
+    /// bukan `curve` yang bisa berisi edit yang belum diterapkan.
+    hw_curve: Vec<Point>,
     /// Puncak kecepatan kurva firmware, patokan batas aman di `validate_curve`. Hanya diperbarui
     /// saat memuat default firmware, BUKAN setelah "Terapkan", supaya batas tidak turun berulang-ulang.
     baseline: Option<Point>,
@@ -50,6 +53,7 @@ impl Panel {
         let mut p = Self {
             legion,
             curve: vec![],
+            hw_curve: vec![],
             baseline: None,
             mode: None,
             gsync: None,
@@ -74,6 +78,7 @@ impl Panel {
                 if reset_baseline || self.baseline.is_none() {
                     self.baseline = Some(legion::peak(&c));
                 }
+                self.hw_curve = c.clone();
                 self.curve = c;
             }
             Err(e) => self.status = format!("Gagal baca fan curve: {e}"),
@@ -138,6 +143,10 @@ impl Panel {
         if self.polled.elapsed() >= POLL {
             if let Some(l) = &self.legion {
                 self.sensors = l.sensors();
+                // Firmware bisa mengganti kurva sendiri (Fn+Q), jadi baca ulang untuk penunjuk titik.
+                if let Ok(c) = l.curve() {
+                    self.hw_curve = c;
+                }
             }
             self.polled = Instant::now();
         }
@@ -148,6 +157,14 @@ impl Panel {
         let r = |v: Option<u32>| v.map_or("-".into(), |c| format!("{c} rpm"));
         ui.label(format!("CPU {}  GPU {}  IC {}", f(s.cpu_c), f(s.gpu_c), f(s.ic_c)));
         ui.label(format!("Kipas 1: {}   Kipas 2: {}", r(s.fan1_rpm), r(s.fan2_rpm)));
+        // Titik aktif tiap kipas, dicari dari kecepatan target firmware.
+        let at = |fan: u8, target: Option<u32>| target.and_then(|t| legion::current_point(&self.hw_curve, fan, t));
+        let (cur1, cur2) = (at(1, s.fan1_target_rpm), at(2, s.fan2_target_rpm));
+        let show = |c: Option<usize>, t: Option<u32>| match (c, t) {
+            (Some(i), Some(t)) => format!("titik {} (target {t} rpm)", i + 1),
+            _ => "tidak diketahui".into(),
+        };
+        ui.label(format!("Posisi kurva: kipas 1 di {}; kipas 2 di {}", show(cur1, s.fan1_target_rpm), show(cur2, s.fan2_target_rpm)));
 
         ui.separator();
         ui.label("Mode Legion (EC). Mengganti mode memuat kurva bawaan mode itu.");
@@ -170,15 +187,27 @@ impl Panel {
 
         ui.separator();
         ui.label("Fan curve (pwm 0–255, naik seiring suhu)");
-        egui::Grid::new("curve").num_columns(3).show(ui, |ui| {
+        egui::Grid::new("curve").num_columns(5).show(ui, |ui| {
             ui.strong("Titik");
             ui.strong("Kipas 1");
             ui.strong("Kipas 2");
+            ui.strong("≈ rpm");
+            ui.strong("Aktif");
             ui.end_row();
             for (i, p) in self.curve.iter_mut().enumerate() {
-                ui.label(format!("{}", i + 1));
+                let active = cur1 == Some(i) || cur2 == Some(i);
+                let num = format!("{}", i + 1);
+                if active {
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, format!("▶ {num}"));
+                } else {
+                    ui.label(num);
+                }
                 ui.add(egui::DragValue::new(&mut p.pwm1).range(0..=255));
                 ui.add(egui::DragValue::new(&mut p.pwm2).range(0..=255));
+                ui.weak(format!("{}", legion::pwm_to_rpm(p.pwm1)));
+                // Penanda kipas mana yang sedang di titik ini.
+                let who = [(cur1 == Some(i)).then_some("K1"), (cur2 == Some(i)).then_some("K2")];
+                ui.label(who.into_iter().flatten().collect::<Vec<_>>().join(" "));
                 ui.end_row();
             }
         });

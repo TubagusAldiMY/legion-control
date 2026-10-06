@@ -29,6 +29,10 @@ pub struct Point {
 pub struct Sensors {
     pub fan1_rpm: Option<u32>,
     pub fan2_rpm: Option<u32>,
+    /// Kecepatan yang DIPERINTAHKAN firmware (= kecepatan titik kurva yang sedang aktif);
+    /// `fan*_rpm` adalah kecepatan aktual yang menyusul target secara bertahap.
+    pub fan1_target_rpm: Option<u32>,
+    pub fan2_target_rpm: Option<u32>,
     pub cpu_c: Option<i32>,
     pub gpu_c: Option<i32>,
     pub ic_c: Option<i32>,
@@ -74,6 +78,8 @@ impl Legion {
         Sensors {
             fan1_rpm: fan("fan1_input"),
             fan2_rpm: fan("fan2_input"),
+            fan1_target_rpm: fan("fan1_target"),
+            fan2_target_rpm: fan("fan2_target"),
             cpu_c: temp("temp1_input"),
             gpu_c: temp("temp2_input"),
             ic_c: temp("temp3_input"),
@@ -154,6 +160,25 @@ pub fn powermode_label(mode: u8) -> &'static str {
         2 => "Quiet",
         _ => "Custom",
     }
+}
+
+/// Perkiraan rpm dari nilai pwm. Firmware menyimpan kecepatan dalam satuan 100 rpm dan pwm
+/// = satuan × 2,55, jadi rpm = round(pwm × 100 / 255) × 100 (cocok dengan `fan*_target`).
+pub fn pwm_to_rpm(pwm: u8) -> u32 {
+    (u32::from(pwm) * 100 + 127) / 255 * 100
+}
+
+/// Titik kurva yang sedang aktif (indeks 0-based) untuk `fan` (1 atau 2), dicari dengan
+/// mencocokkan `target_rpm` ke kecepatan tiap titik. Firmware tidak mengekspos nomor titik
+/// ke user biasa (hanya lewat debugfs yang butuh root). Bila kecepatan beberapa titik sama
+/// (datar), dipilih titik tertinggi; bila target di antara dua titik, yang terdekat.
+pub fn current_point(curve: &[Point], fan: u8, target_rpm: u32) -> Option<usize> {
+    let rpm = |p: &Point| pwm_to_rpm(if fan == 2 { p.pwm2 } else { p.pwm1 });
+    curve
+        .iter()
+        .enumerate()
+        .min_by_key(|(i, p)| (rpm(p).abs_diff(target_rpm), std::cmp::Reverse(*i)))
+        .map(|(i, _)| i)
 }
 
 /// Kecepatan tertinggi tiap kipas di kurva. Dipakai sebagai patokan aman, BUKAN titik terakhir:
@@ -243,7 +268,7 @@ pub(crate) mod tests {
             fs::write(h.join(format!("pwm1_auto_point{n}_pwm")), format!("{a}\n")).unwrap();
             fs::write(h.join(format!("pwm2_auto_point{n}_pwm")), format!("{b}\n")).unwrap();
         }
-        for (f, v) in [("fan1_input", "2100"), ("fan2_input", "2300"), ("temp1_input", "52000"), ("temp2_input", "0"), ("temp3_input", "45")] {
+        for (f, v) in [("fan1_input", "2100"), ("fan2_input", "2300"), ("fan1_target", "1600"), ("fan2_target", "4700"), ("temp1_input", "52000"), ("temp2_input", "0"), ("temp3_input", "45")] {
             fs::write(h.join(f), format!("{v}\n")).unwrap();
         }
         fs::write(sys.join("powermode"), "0\n").unwrap();
@@ -268,6 +293,7 @@ pub(crate) mod tests {
         let (l, root) = fake("sensors");
         let s = l.sensors();
         assert_eq!((s.fan1_rpm, s.fan2_rpm), (Some(2100), Some(2300)));
+        assert_eq!((s.fan1_target_rpm, s.fan2_target_rpm), (Some(1600), Some(4700)));
         assert_eq!((s.cpu_c, s.gpu_c, s.ic_c), (Some(52), Some(0), Some(45)));
         fs::remove_dir_all(root).ok();
     }
@@ -327,6 +353,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// Titik aktif dicari dari target rpm. Data = kurva nyata Legion 5 15ACH6 setelah +20
+    /// (dibaca dari hardware: target 4300 rpm saat firmware berada di titik 8).
+    #[test]
+    fn current_point_from_target() {
+        let curve: Vec<Point> = [0, 63, 68, 73, 79, 86, 94, 109, 114, 122].iter().map(|&v| Point { pwm1: v, pwm2: v }).collect();
+        assert_eq!(pwm_to_rpm(109), 4300);
+        assert_eq!(pwm_to_rpm(0), 0);
+        let cases: [(&str, u8, u32, Option<usize>); 6] = [
+            ("target = titik 8 (kasus nyata)", 1, 4300, Some(7)),
+            ("kipas 2 memakai kolom pwm2", 2, 2500, Some(1)),
+            ("kipas mati = titik 1", 1, 0, Some(0)),
+            ("di atas semua titik = titik terakhir", 1, 9000, Some(9)),
+            ("di antara 3700 dan 4300: seri, pilih titik lebih tinggi", 1, 4000, Some(7)),
+            ("lebih dekat ke 3700", 1, 3800, Some(6)),
+        ];
+        for (name, fan, target, want) in cases {
+            assert_eq!(current_point(&curve, fan, target), want, "{name}");
+        }
+        assert_eq!(current_point(&[], 1, 100), None);
+        // Kecepatan sama di dua titik (datar): pilih yang tertinggi.
+        let flat = [Point { pwm1: 0, pwm2: 0 }, Point { pwm1: 50, pwm2: 50 }, Point { pwm1: 50, pwm2: 50 }];
+        assert_eq!(current_point(&flat, 1, pwm_to_rpm(50)), Some(2));
+    }
+
     /// Regression: setelah ganti mode, titik terakhir terbaca 0. Patokan harus tetap puncak kurva (94),
     /// bukan 0, supaya kurva "semua 0" tetap ditolak.
     #[test]
@@ -351,7 +401,14 @@ pub(crate) mod tests {
         assert!(l.powermode().is_ok());
         assert!(l.gsync_supported(), "gsync seharusnya didukung di 82JW");
         l.gsync().expect("gsync tidak terbaca");
-        println!("curve={c:?} mode={:?} gsync={:?} sensors={:?}", l.powermode(), l.gsync(), l.sensors());
+        // Titik aktif harus ketemu dan kecepatannya cocok dengan target firmware.
+        let s = l.sensors();
+        let (target, i) = {
+            let t = s.fan1_target_rpm.expect("fan1_target tidak terbaca");
+            (t, current_point(&c, 1, t).expect("titik aktif tidak ketemu"))
+        };
+        assert!(pwm_to_rpm(c[i].pwm1).abs_diff(target) <= 100, "target {target} rpm tidak cocok dengan titik {}", i + 1);
+        println!("curve={c:?} mode={:?} gsync={:?} sensors={s:?} titik_aktif_kipas1={}", l.powermode(), l.gsync(), i + 1);
     }
 
     /// Sanity: GPU terdeteksi dari sysfs PCI palsu; non-display diabaikan.
