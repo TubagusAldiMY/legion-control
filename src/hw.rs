@@ -5,7 +5,7 @@
 
 use std::{
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -20,16 +20,10 @@ pub const PROFILES: [&str; 3] = ["power-saver", "balanced", "performance"];
 pub enum Toggle {
     Conservation,
     FnLock,
-    Camera,
     UsbCharging,
 }
 
-pub const TOGGLES: [Toggle; 4] = [
-    Toggle::Conservation,
-    Toggle::FnLock,
-    Toggle::Camera,
-    Toggle::UsbCharging,
-];
+pub const TOGGLES: [Toggle; 3] = [Toggle::Conservation, Toggle::FnLock, Toggle::UsbCharging];
 
 impl Toggle {
     /// Nama file di sysfs. Nama ini ditentukan kernel, jangan diubah sembarangan.
@@ -37,7 +31,6 @@ impl Toggle {
         match self {
             Toggle::Conservation => "conservation_mode",
             Toggle::FnLock => "fn_lock",
-            Toggle::Camera => "camera_power",
             Toggle::UsbCharging => "usb_charging",
         }
     }
@@ -46,7 +39,6 @@ impl Toggle {
         match self {
             Toggle::Conservation => "Conservation Mode",
             Toggle::FnLock => "Fn Lock",
-            Toggle::Camera => "Kamera",
             Toggle::UsbCharging => "USB charging saat mati",
         }
     }
@@ -55,7 +47,6 @@ impl Toggle {
         match self {
             Toggle::Conservation => "Batasi pengisian ±80% supaya baterai awet",
             Toggle::FnLock => "Tombol F1–F12 jadi fungsi asli tanpa menekan Fn",
-            Toggle::Camera => "Nyalakan/matikan kamera di level hardware",
             Toggle::UsbCharging => "Port USB tetap mengisi daya saat laptop mati",
         }
     }
@@ -83,6 +74,41 @@ impl Sysfs {
     /// Tulis status saklar. Butuh izin tulis (lihat `udev/99-legion-control.rules`).
     pub fn set(&self, t: Toggle, on: bool) -> io::Result<()> {
         fs::write(self.path(t), if on { "1" } else { "0" })
+    }
+}
+
+/// Kamera bawaan laptop. Atribut sysfs `camera_power` tidak berefek di model ini
+/// (nilainya 0 padahal kamera menyala), jadi kamera dimatikan lewat otorisasi USB:
+/// `authorized=0` membuat kernel melepas device sehingga `/dev/video*` hilang.
+pub struct Camera {
+    dir: PathBuf,
+}
+
+impl Camera {
+    /// Cari device USB yang menempel permanen (`removable=fixed`) dan bernama kamera.
+    /// Dicari lewat nama, bukan interface, karena interface hilang saat `authorized=0`.
+    pub fn find(usb_root: &Path) -> Option<Self> {
+        for entry in fs::read_dir(usb_root).ok()?.flatten() {
+            let dir = entry.path();
+            // Entri "1-3:1.0" adalah interface, bukan device; lewati.
+            if entry.file_name().to_string_lossy().contains(':') {
+                continue;
+            }
+            let attr = |n: &str| fs::read_to_string(dir.join(n)).unwrap_or_default().trim().to_lowercase();
+            if attr("removable") == "fixed" && ["camera", "webcam"].iter().any(|k| attr("product").contains(k)) {
+                return Some(Self { dir });
+            }
+        }
+        None
+    }
+
+    pub fn get(&self) -> io::Result<bool> {
+        Ok(fs::read_to_string(self.dir.join("authorized"))?.trim() == "1")
+    }
+
+    /// Butuh izin tulis ke `authorized` (lihat `udev/99-legion-control.rules`).
+    pub fn set(&self, on: bool) -> io::Result<()> {
+        fs::write(self.dir.join("authorized"), if on { "1" } else { "0" })
     }
 }
 
@@ -167,5 +193,30 @@ mod tests {
     #[test]
     fn profile_rejects_unknown() {
         assert!(set_profile("turbo; rm -rf /").is_err());
+    }
+
+    /// Sanity: kamera "fixed" ditemukan, USB eksternal & interface diabaikan, saklar on/off jalan.
+    #[test]
+    fn camera_find_and_toggle() {
+        let root = std::env::temp_dir().join(format!("legion-usb-{}", std::process::id()));
+        let mk = |name: &str, product: &str, removable: &str| {
+            let d = root.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("product"), product).unwrap();
+            fs::write(d.join("removable"), removable).unwrap();
+            fs::write(d.join("authorized"), "1\n").unwrap();
+        };
+        mk("1-2.1.4", "USB GAMING MOUSE", "unknown");
+        mk("1-9", "External Webcam", "removable"); // webcam eksternal: jangan disentuh
+        mk("1-3:1.0", "Integrated Camera", "fixed"); // interface: dilewati
+        mk("1-3", "Integrated Camera", "fixed");
+        let cam = Camera::find(&root).expect("kamera bawaan harus ketemu");
+        assert!(cam.get().unwrap());
+        cam.set(false).unwrap();
+        assert!(!cam.get().unwrap());
+        cam.set(true).unwrap();
+        assert!(cam.get().unwrap());
+        fs::remove_dir_all(&root).ok();
+        assert!(Camera::find(&root).is_none(), "folder tidak ada -> None, bukan panic");
     }
 }

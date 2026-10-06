@@ -6,12 +6,14 @@
 mod hw;
 
 use eframe::egui;
-use hw::{Sysfs, Toggle, PROFILES, TOGGLES};
+use hw::{Camera, Sysfs, Toggle, PROFILES, TOGGLES};
 use std::{sync::mpsc, thread};
 use tracing::{error, info};
 
 struct App {
     sysfs: Sysfs,
+    camera: Option<Camera>,
+    camera_on: Option<bool>,
     /// Status tiap saklar; `Err` berisi pesan yang ditampilkan ke user.
     toggles: Vec<(Toggle, Result<bool, String>)>,
     profile: Option<String>,
@@ -26,6 +28,8 @@ impl App {
     fn new() -> Self {
         let mut app = Self {
             sysfs: Sysfs::new(hw::DEFAULT_BASE),
+            camera: Camera::find(std::path::Path::new("/sys/bus/usb/devices")),
+            camera_on: None,
             toggles: vec![],
             profile: None,
             status: String::new(),
@@ -42,7 +46,23 @@ impl App {
             .iter()
             .map(|&t| (t, self.sysfs.get(t).map_err(|e| e.to_string())))
             .collect();
+        self.camera_on = self.camera.as_ref().and_then(|c| c.get().ok());
         self.profile = hw::get_profile();
+    }
+
+    fn set_camera(&mut self, on: bool) {
+        let Some(cam) = &self.camera else { return };
+        self.status = match cam.set(on) {
+            Ok(()) => {
+                info!(on, "kamera diubah");
+                format!("Kamera: {}", if on { "ON" } else { "OFF" })
+            }
+            Err(e) => {
+                error!(error = %e, "gagal mengubah kamera");
+                format!("Gagal ubah Kamera ({e}). Sudah pasang aturan udev terbaru?")
+            }
+        };
+        self.refresh();
     }
 
     fn set_toggle(&mut self, t: Toggle, on: bool) {
@@ -88,6 +108,17 @@ impl eframe::App for App {
                     Err(e) => {
                         ui.add_enabled(false, egui::Label::new(format!("{}: tidak tersedia ({e})", t.label())));
                     }
+                }
+            }
+
+            match self.camera_on {
+                Some(mut on) => {
+                    if ui.checkbox(&mut on, "Kamera").on_hover_text("Matikan kamera bawaan (putus USB-nya)").changed() {
+                        self.set_camera(on);
+                    }
+                }
+                None => {
+                    ui.add_enabled(false, egui::Label::new("Kamera: tidak ditemukan"));
                 }
             }
 

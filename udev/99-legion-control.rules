@@ -1,3 +1,10 @@
-# Beri grup plugdev izin tulis ke saklar ideapad_acpi supaya legion-control
-# tidak perlu root. Dipasang manual: lihat how-to-run.md.
-ACTION=="add|bind", DRIVER=="ideapad_acpi", RUN+="/bin/sh -c 'for f in conservation_mode fn_lock camera_power usb_charging; do chgrp plugdev /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$f && chmod g+w /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$f; done'"
+# Beri grup plugdev izin tulis supaya legion-control tidak perlu root.
+# Dipasang manual: lihat how-to-run.md.
+
+# 1. Saklar ideapad_acpi (conservation mode, fn lock, usb charging).
+ACTION=="add|bind", DRIVER=="ideapad_acpi", RUN+="/bin/sh -c 'for f in conservation_mode fn_lock usb_charging; do chgrp plugdev /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$$f && chmod g+w /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/$$f; done'"
+
+# 2. Kamera bawaan: izin tulis ke `authorized` milik device USB induknya.
+#    Path: video0 -> .. video4linux -> ../.. interface (1-3:1.0) -> ../../.. device (1-3).
+#    Hanya kamera yang menempel permanen (removable=fixed); webcam USB eksternal tidak tersentuh.
+ACTION=="add", SUBSYSTEM=="video4linux", SUBSYSTEMS=="usb", ATTRS{removable}=="fixed", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/../../../authorized; chmod g+w /sys%p/../../../authorized'"

@@ -21,8 +21,13 @@ File sysfs milik root, jadi tanpa langkah ini klik saklar akan gagal dengan pesa
 sudo cp udev/99-legion-control.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger --action=bind --subsystem-match=platform
+sudo udevadm trigger --action=add --subsystem-match=video4linux
 ```
-Pastikan user ada di grup `plugdev` (`id -nG`). Verifikasi: `ls -l /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode` harus `-rw-rw-r-- root plugdev`.
+Pastikan user ada di grup `plugdev` (`id -nG`). Verifikasi:
+```bash
+ls -l /sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode /sys/bus/usb/devices/1-3/authorized
+```
+Keduanya harus `-rw-rw-r-- root plugdev` (`1-3` = kamera bawaan; nomornya bisa beda: cari yang `product`-nya "Integrated Camera"). Cek sintaks aturan: `udevadm verify udev/99-legion-control.rules`.
 Izin ini hilang saat reboot lalu dipasang ulang otomatis oleh aturan udev.
 
 ## Production
@@ -37,6 +42,8 @@ Health check: jendela terbuka dan log JSON `"legion-control start"` muncul di st
 | Gejala | Solusi |
 |---|---|
 | "Gagal ubah ... Sudah pasang aturan udev?" | Jalankan langkah izin sysfs di atas |
+| Kamera: "tidak ditemukan" | Tidak ada device USB `removable=fixed` bernama kamera: `grep -H . /sys/bus/usb/devices/*/product` |
+| Kamera dimatikan tapi `/dev/video0` masih ada | Aplikasi lain sedang memakai kamera; tutup dulu lalu matikan lagi |
 | Saklar tertulis "tidak tersedia" | Bukan Lenovo IdeaPad/Legion, atau path `VPC2004:00` beda: `ls /sys/bus/platform/drivers/ideapad_acpi/` |
 | Tombol profil tidak ada yang aktif | `power-profiles-daemon` belum jalan: `systemctl status power-profiles-daemon` |
 | Cek firmware: "fwupdmgr tidak bisa dijalankan" | `sudo apt install fwupd` |

@@ -22,7 +22,8 @@ Sumber kebenaran selalu kernel, bukan variabel di UI, sehingga tampilan tetap be
 ## Alur per kontrol
 | Kontrol | Mekanisme | Sukses | Gagal |
 |---|---|---|---|
-| Conservation / Fn Lock / Kamera / USB charging | baca/tulis `/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/<file>` | status bar "X: ON/OFF" | error ditampilkan; baca gagal → baris "tidak tersedia" |
+| Conservation / Fn Lock / USB charging | baca/tulis `/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/<file>` | status bar "X: ON/OFF" | error ditampilkan; baca gagal → baris "tidak tersedia" |
+| Kamera | tulis `0`/`1` ke `authorized` device USB bawaan (dicari: `removable=fixed` + nama "camera"). `camera_power` sysfs **tidak dipakai**: tidak berefek di 82JW | status bar "Kamera: ON/OFF" | "tidak ditemukan" / error izin |
 | Mode performa | `powerprofilesctl get/set`; argumen divalidasi terhadap daftar `PROFILES` | "Profil: x" | "Gagal ganti profil" |
 | Cek firmware | thread terpisah menjalankan `fwupdmgr get-updates`, hasil lewat `mpsc` channel | teks output (exit code 2 = tidak ada update) | pesan error teks |
 
