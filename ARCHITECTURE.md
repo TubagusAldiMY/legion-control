@@ -9,6 +9,7 @@ Tracing OpenTelemetry **N/A** (bukan microservice); `request_id` juga N/A karena
 | `src/main.rs` | Entry point, setup log JSON, jendela egui, menggambar state & meneruskan klik |
 | `src/hw.rs` | **Satu-satunya** tempat yang menyentuh sistem: sysfs, `powerprofilesctl`, `fwupdmgr` + test |
 | `src/legion.rs` | Akses modul LenovoLegionLinux (sensor, fan curve, powermode, gsync) + `validate_curve` + daftar GPU. Path diinjeksi supaya bisa dites |
+| `src/keeper.rs` | Penjaga kurva kipas: thread latar yang menerapkan ulang kurva simpanan (`~/.config/legion-control/fancurve.conf`) saat mode Custom |
 | `src/panel.rs` | State & tampilan tab Fan dan GPU |
 | `src/tray.rs` | Ikon tray (StatusNotifierItem via `ksni`): menu Tampilkan/Keluar; gagal → mode jendela biasa |
 | `src/autostart.rs` | Tulis/hapus `~/.config/autostart/legion-control.desktop` |
@@ -30,6 +31,9 @@ Sumber kebenaran selalu kernel, bukan variabel di UI, sehingga tampilan tetap be
 - **Fan curve**: dibaca dari `pwmY_auto_pointN_pwm` (jumlah titik = jumlah file). User mengedit buffer; **Terapkan** hanya aktif bila `validate_curve` lolos, lalu menulis semua titik dan membaca ulang. `baseline` (puncak kecepatan kurva firmware, bukan titik terakhir) hanya diset saat memuat/reset default, bukan setelah Terapkan.
 - **Reset default / ganti mode**: menulis `powermode`; firmware memuat kurva bawaan mode itu.
 - **Hybrid Mode**: `gsync` (1 = hybrid). Perubahan butuh konfirmasi dan berlaku setelah restart. Mode yang *sedang* berlaku diambil dari jumlah GPU di `/sys/bus/pci/devices`.
+
+## Alur penjaga kurva
+`App::new` → `keeper::spawn` (no-op bila modul tidak ada) → thread `fan-keeper`, tiap 2 detik: baca `fancurve.conf` → bila `enabled`, mode = Custom (3), dan kurva hardware berbeda (toleransi ±2 pwm karena pembulatan hardware) → `validate_curve(simpanan, peak)` → `set_curve`. UI tidak berkomunikasi lewat channel: ia hanya menulis file (atomik: tulis `.tmp` lalu `rename`) dan penjaga membacanya di putaran berikutnya.
 
 ## Alur tray
 Thread tray (`ksni`) → klik menu → `TrayEvent` lewat `mpsc` + `ctx.request_repaint()` → `App::logic` membaca event: `Show` = tampilkan+fokus, `Quit` = tutup. Tombol X saat tray aktif = `CancelClose` + sembunyikan. `logic` dipakai (bukan `ui`) karena tetap dipanggil saat jendela tersembunyi.

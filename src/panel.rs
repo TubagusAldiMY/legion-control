@@ -3,9 +3,13 @@
 //! Logika akses hardware ada di `legion.rs`; file ini hanya memegang state UI
 //! (buffer kurva yang sedang diedit, konfirmasi, status) dan menggambarnya.
 
+use crate::keeper::{self, Saved};
 use crate::legion::{self, Gpu, Legion, Point, Sensors};
 use eframe::egui;
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 use tracing::{error, info};
 
 const POLL: Duration = Duration::from_secs(1);
@@ -26,15 +30,23 @@ pub struct Panel {
     sensors: Sensors,
     polled: Instant,
     status: String,
+    /// Lokasi file kurva simpanan (dibaca juga oleh penjaga di thread latar).
+    cfg: Option<PathBuf>,
+    saved: Option<Saved>,
 }
 
 impl Panel {
     pub fn new() -> Self {
-        Self::with(Legion::detect(), legion::gpus_in(std::path::Path::new("/sys/bus/pci/devices")))
+        Self::with(
+            Legion::detect(),
+            legion::gpus_in(std::path::Path::new("/sys/bus/pci/devices")),
+            keeper::config_path(),
+        )
     }
 
     /// Konstruktor dengan dependensi diinjeksi (dipakai test).
-    fn with(legion: Option<Legion>, gpus: Vec<Gpu>) -> Self {
+    fn with(legion: Option<Legion>, gpus: Vec<Gpu>, cfg: Option<PathBuf>) -> Self {
+        let saved = cfg.as_deref().and_then(Saved::load);
         let mut p = Self {
             legion,
             curve: vec![],
@@ -47,6 +59,8 @@ impl Panel {
             sensors: Sensors::default(),
             polled: Instant::now() - POLL,
             status: String::new(),
+            cfg,
+            saved,
         };
         p.reload(true);
         p
@@ -82,6 +96,34 @@ impl Panel {
                 false
             }
         }
+    }
+
+    /// Simpan kurva untuk penjaga. `enabled=false` menjaga data tapi menonaktifkan penerapan ulang.
+    fn persist(&mut self, saved: Saved) {
+        let Some(path) = self.cfg.clone() else {
+            self.status = "Folder konfigurasi tidak ditemukan; kurva tidak disimpan.".into();
+            return;
+        };
+        match saved.save(&path) {
+            Ok(()) => self.saved = Some(saved),
+            Err(e) => {
+                error!(error = %e, "gagal menyimpan kurva");
+                self.status = format!("Gagal menyimpan kurva: {e}");
+            }
+        }
+    }
+
+    /// Centang/lepas "pertahankan kurva". Pertama kali dicentang tanpa simpanan: yang disimpan
+    /// adalah kurva yang SEDANG aktif di hardware (bukan buffer edit yang belum diterapkan).
+    fn set_keep(&mut self, on: bool) {
+        let hw = self.legion.as_ref().and_then(|l| l.curve().ok());
+        let saved = match (self.saved.clone(), hw) {
+            (Some(s), _) => Saved { enabled: on, ..s },
+            (None, Some(curve)) => Saved { enabled: on, peak: self.baseline.unwrap_or_else(|| legion::peak(&curve)), curve },
+            (None, None) => return,
+        };
+        self.persist(saved);
+        self.status = if on { "Kurva akan dipertahankan otomatis.".into() } else { "Penjagaan kurva dimatikan.".into() };
     }
 
     fn not_installed(ui: &mut egui::Ui) {
@@ -152,6 +194,11 @@ impl Panel {
                 if let Some(r) = r {
                     if self.report("menulis fan curve", r, "Fan curve diterapkan".into()) {
                         self.reload(false);
+                        // Bila "pertahankan" aktif, kurva baru ini menjadi simpanan.
+                        if self.saved.as_ref().is_some_and(|s| s.enabled) {
+                            let peak = self.baseline.unwrap_or_else(|| legion::peak(&self.curve));
+                            self.persist(Saved { enabled: true, peak, curve: self.curve.clone() });
+                        }
                     }
                 }
             }
@@ -172,7 +219,15 @@ impl Panel {
                 self.reload(false);
             }
         });
-        ui.weak("Firmware bisa menimpa kurva saat mode diganti (Fn+Q). Terapkan lagi bila perlu.");
+        let mut keep = self.saved.as_ref().is_some_and(|s| s.enabled);
+        if ui
+            .checkbox(&mut keep, "Pertahankan kurva ini")
+            .on_hover_text("Bila mode Custom dan firmware menimpa kurva, aplikasi menerapkan ulang kurva simpanan (selama aplikasi berjalan).")
+            .changed()
+        {
+            self.set_keep(keep);
+        }
+        ui.weak("Firmware menimpa kurva saat mode diganti (Fn+Q). Dengan \"Pertahankan\", kurva diterapkan ulang otomatis saat mode kembali ke Custom.");
         ui.weak(&self.status);
     }
 
@@ -257,14 +312,20 @@ mod tests {
             }
         };
         let (l, root) = crate::legion::tests::fake("panel");
-        let mut p = Panel::with(Some(l), vec![Gpu { vendor: "NVIDIA" }]);
+        let cfg = root.join("cfg").join("fancurve.conf");
+        let mut p = Panel::with(Some(l), vec![Gpu { vendor: "NVIDIA" }], Some(cfg.clone()));
         assert_eq!(p.curve.len(), 3);
         draw(&mut p);
         p.curve[2] = Point { pwm1: 0, pwm2: 0 }; // tidak aman: tombol Terapkan harus nonaktif, pesan tampil
         draw(&mut p);
         p.confirm_gsync = Some(true);
         draw(&mut p);
-        draw(&mut Panel::with(None, vec![]));
+        draw(&mut Panel::with(None, vec![], None));
+        // Centang "pertahankan" menyimpan kurva aktif; Terapkan menyimpan kurva baru; lepas = nonaktif.
+        p.set_keep(true);
+        assert!(Saved::load(&cfg).is_some_and(|s| s.enabled && s.curve.len() == 3));
+        p.set_keep(false);
+        assert!(Saved::load(&cfg).is_some_and(|s| !s.enabled));
         std::fs::remove_dir_all(root).ok();
     }
 }

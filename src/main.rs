@@ -5,6 +5,7 @@
 
 mod autostart;
 mod hw;
+mod keeper;
 mod legion;
 mod panel;
 mod tray;
@@ -68,6 +69,10 @@ impl App {
         if hidden {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(app.tray_rx.is_none()));
             ctx.request_repaint();
+        }
+        // Penjaga kurva kipas berjalan di latar selama aplikasi hidup (no-op tanpa modul).
+        if let Some(path) = keeper::config_path() {
+            keeper::spawn(path);
         }
         app.refresh();
         app
