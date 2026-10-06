@@ -112,6 +112,38 @@ impl Camera {
     }
 }
 
+/// Turbo boost CPU (`cpufreq/boost`). Mematikannya membatasi frekuensi ke clock dasar: beban
+/// berkelanjutan jauh lebih dingin, dengan harga performa lonjakan.
+pub struct Boost {
+    file: PathBuf,
+}
+
+impl Boost {
+    pub const DEFAULT_PATH: &'static str = "/sys/devices/system/cpu/cpufreq/boost";
+
+    /// `None` bila driver cpufreq tidak mengekspos saklar boost.
+    pub fn find(path: impl Into<PathBuf>) -> Option<Self> {
+        let file = path.into();
+        file.is_file().then_some(Self { file })
+    }
+
+    pub fn get(&self) -> io::Result<bool> {
+        Ok(fs::read_to_string(&self.file)?.trim() == "1")
+    }
+
+    /// Butuh izin tulis (lihat `udev/99-legion-control.rules`).
+    pub fn set(&self, on: bool) -> io::Result<()> {
+        fs::write(&self.file, if on { "1" } else { "0" })
+    }
+}
+
+/// Governor dan energy-performance-preference CPU0 (hanya informasi: menjelaskan kenapa CPU
+/// agresif memakai frekuensi). Diatur oleh profil daya sistem, bukan aplikasi ini.
+pub fn cpu_policy() -> (Option<String>, Option<String>) {
+    let read = |n: &str| fs::read_to_string(format!("/sys/devices/system/cpu/cpu0/cpufreq/{n}")).ok().map(|s| s.trim().to_string());
+    (read("scaling_governor"), read("energy_performance_preference"))
+}
+
 /// Profil daya aktif, atau `None` bila `powerprofilesctl` tidak ada/gagal.
 pub fn get_profile() -> Option<String> {
     let out = Command::new("powerprofilesctl").arg("get").output().ok()?;
@@ -218,5 +250,22 @@ mod tests {
         assert!(cam.get().unwrap());
         fs::remove_dir_all(&root).ok();
         assert!(Camera::find(&root).is_none(), "folder tidak ada -> None, bukan panic");
+    }
+
+    /// Sanity: saklar boost ditemukan hanya bila file ada; baca/tulis on/off.
+    #[test]
+    fn boost_toggle() {
+        let dir = std::env::temp_dir().join(format!("legion-boost-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("boost");
+        assert!(Boost::find(&file).is_none(), "file belum ada -> None");
+        fs::write(&file, "1\n").unwrap();
+        let b = Boost::find(&file).expect("harus ketemu");
+        assert!(b.get().unwrap());
+        b.set(false).unwrap();
+        assert!(!b.get().unwrap());
+        b.set(true).unwrap();
+        assert!(b.get().unwrap());
+        fs::remove_dir_all(dir).ok();
     }
 }

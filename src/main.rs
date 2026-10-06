@@ -26,6 +26,7 @@ use tracing::{error, info};
 enum Tab {
     Umum,
     Fan,
+    Power,
     Gpu,
 }
 
@@ -154,7 +155,7 @@ impl App {
             });
         });
         ui.add_space(26.0);
-        for (t, icon, label) in [(Tab::Umum, Icon::Sliders, "Perangkat"), (Tab::Fan, Icon::Fan, "Kipas & suhu"), (Tab::Gpu, Icon::Chip, "Grafis")] {
+        for (t, icon, label) in [(Tab::Umum, Icon::Sliders, "Perangkat"), (Tab::Fan, Icon::Fan, "Kipas & suhu"), (Tab::Power, Icon::Bolt, "Daya & panas"), (Tab::Gpu, Icon::Chip, "Grafis")] {
             if theme::nav_item(ui, icon, label, self.tab == t).clicked() && self.tab != t {
                 self.tab = t;
                 self.epoch = ui.ctx().input(|i| i.time);
@@ -350,6 +351,7 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
                     Tab::Umum => self.general_ui(ui),
                     Tab::Fan => self.panel.fan_ui(ui, self.epoch),
+                    Tab::Power => self.panel.power_ui(ui, self.epoch),
                     Tab::Gpu => self.panel.gpu_ui(ui, self.epoch),
                 });
             });
@@ -432,6 +434,7 @@ fn main() -> eframe::Result {
     let no_module = has("--no-module");
     let tab = match value_of("--tab").as_deref() {
         Some("fan") => Tab::Fan,
+        Some("power") => Tab::Power,
         Some("gpu") => Tab::Gpu,
         _ => Tab::Umum,
     };

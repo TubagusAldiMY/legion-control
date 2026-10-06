@@ -378,6 +378,7 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 pub enum Icon {
     Sliders,
     Fan,
+    Bolt,
     Chip,
 }
 
@@ -402,6 +403,17 @@ pub fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 p.line_segment([mid, tip], s);
             }
             p.circle_filled(c, 1.6, color);
+        }
+        Icon::Bolt => {
+            let pts = vec![
+                Pos2::new(c.x + 2.0, c.y - 8.5),
+                Pos2::new(c.x - 5.0, c.y + 1.0),
+                Pos2::new(c.x - 0.5, c.y + 1.0),
+                Pos2::new(c.x - 2.0, c.y + 8.5),
+                Pos2::new(c.x + 5.0, c.y - 1.5),
+                Pos2::new(c.x + 0.5, c.y - 1.5),
+            ];
+            p.add(egui::Shape::closed_line(pts, s));
         }
         Icon::Chip => {
             let r = Rect::from_center_size(c, Vec2::splat(11.0));
@@ -431,4 +443,41 @@ pub fn nav_item(ui: &mut Ui, icon: Icon, label: &str, active: bool) -> egui::Res
     paint_icon(p, Rect::from_center_size(Pos2::new(rect.left() + 22.0, rect.center().y), Vec2::splat(18.0)), icon, lerp_color(col, ACCENT, t * 0.9));
     p.text(Pos2::new(rect.left() + 44.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::new(14.5, FontFamily::Proportional), col);
     resp
+}
+
+/// Slider bilangka bulat: trek 4px, bagian terisi beraksen, pegangan bulat; nilai mono di kanan.
+/// Mengembalikan `true` saat nilai berubah. Bila rentang kosong (min == max) otomatis nonaktif.
+pub fn slider(ui: &mut Ui, id: &str, value: &mut u32, range: std::ops::RangeInclusive<u32>, unit: &str, enabled: bool) -> bool {
+    let (min, max) = (*range.start(), *range.end().max(range.start()));
+    let enabled = enabled && max > min;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 84.0).max(120.0);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
+        let (x0, x1) = (rect.left() + 9.0, rect.right() - 9.0);
+        if enabled && (resp.dragged() || resp.clicked()) {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let t = ((p.x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+                let v = (min as f32 + t * (max - min) as f32).round() as u32;
+                if v != *value {
+                    *value = v;
+                    changed = true;
+                }
+            }
+        }
+        *value = (*value).clamp(min, max);
+        let t = if max > min { (*value - min) as f32 / (max - min) as f32 } else { 1.0 };
+        let hot = ctx_anim(ui, resp.id, (resp.hovered() || resp.dragged()) && enabled);
+        let y = rect.center().y;
+        let x = tween(ui.ctx(), (id, "x"), x0 + t * (x1 - x0));
+        let alpha = if enabled { 1.0 } else { 0.4 };
+        let p = ui.painter();
+        p.rect_filled(Rect::from_min_max(Pos2::new(x0, y - 2.0), Pos2::new(x1, y + 2.0)), 2, SURFACE_HI);
+        p.rect_filled(Rect::from_min_max(Pos2::new(x0, y - 2.0), Pos2::new(x, y + 2.0)), 2, ACCENT.gamma_multiply(alpha));
+        p.circle_filled(Pos2::new(x, y), 8.0 + 1.5 * hot, BG);
+        p.circle_stroke(Pos2::new(x, y), 8.0 + 1.5 * hot, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
+        ui.label(RichText::new(format!("{}", *value)).font(FontId::new(17.0, FontFamily::Name(MONO_BOLD.into()))).color(if enabled { TEXT } else { TEXT_FAINT }));
+        ui.label(RichText::new(unit).size(12.5).color(TEXT_FAINT));
+    });
+    changed
 }

@@ -4,7 +4,8 @@
 //! (buffer kurva yang sedang diedit, konfirmasi, status) dan menggambarnya.
 
 use crate::keeper::{self, Saved};
-use crate::legion::{self, Gpu, Legion, Point, Sensors};
+use crate::hw::Boost;
+use crate::legion::{self, Gpu, Legion, Point, PowerLimits, Sensors};
 use crate::theme::{self, ButtonKind};
 use crate::graph;
 use eframe::egui::{self, Layout, RichText, Sense, Stroke, Vec2};
@@ -13,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing::{error, info};
+
+mod power;
 
 const POLL: Duration = Duration::from_secs(1);
 
@@ -42,6 +45,14 @@ pub struct Panel {
     /// Lokasi file kurva simpanan (dibaca juga oleh penjaga di thread latar).
     cfg: Option<PathBuf>,
     saved: Option<Saved>,
+    /// Batas daya CPU: nilai firmware saat dimuat (batas atas yang boleh dipakai), buffer edit,
+    /// dan status kipas penuh. Halaman Daya & panas: lihat `panel/power.rs`.
+    power_base: Option<PowerLimits>,
+    power_edit: Option<PowerLimits>,
+    fullspeed: Option<bool>,
+    boost: Option<Boost>,
+    boost_on: Option<bool>,
+    cpu_policy: (Option<String>, Option<String>),
 }
 
 impl Panel {
@@ -74,6 +85,12 @@ impl Panel {
             status: String::new(),
             cfg,
             saved,
+            power_base: None,
+            power_edit: None,
+            fullspeed: None,
+            boost: Boost::find(Boost::DEFAULT_PATH),
+            boost_on: None,
+            cpu_policy: (None, None),
         };
         p.reload(true);
         p
@@ -81,6 +98,8 @@ impl Panel {
 
     /// Baca ulang state dari modul. `reset_baseline` = jadikan kurva yang terbaca sebagai patokan aman.
     fn reload(&mut self, reset_baseline: bool) {
+        // Boost dan kebijakan CPU tidak bergantung pada modul Legion, jadi dibaca lebih dulu.
+        self.refresh_cpu_state();
         let Some(l) = &self.legion else { return };
         match l.curve() {
             Ok(c) => {
@@ -92,6 +111,13 @@ impl Panel {
             }
             Err(e) => self.status = format!("Gagal baca fan curve: {e}"),
         }
+        if let Some(pl) = l.power_limits() {
+            if reset_baseline || self.power_base.is_none() {
+                self.power_base = Some(pl);
+            }
+            self.power_edit = Some(pl);
+        }
+        self.fullspeed = l.fan_fullspeed().ok();
         self.ranges = l.cpu_ranges();
         self.mode = l.powermode().ok();
         self.gsync_supported = l.gsync_supported();

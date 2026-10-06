@@ -60,6 +60,24 @@ ls -l $H/pwm1_auto_point1_pwm /sys/module/legion_laptop/drivers/platform:legion/
 ```
 **Cek konsistensi Hybrid Mode sekali setelah modul terpasang.** Saat ini hanya NVIDIA yang terlihat di `lspci` (iGPU disembunyikan = mode dGPU-only), jadi `cat /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/gsync` (kernel ≥7.0: folder `legion`) seharusnya `0`. Bila hasilnya `1`, arti nilainya terbalik di model ini: jangan pakai tombol Hybrid dan laporkan.
 
+### Daya & panas (batas daya CPU, turbo boost, kipas penuh)
+Halaman **Daya & panas** menurunkan suhu dengan mengorbankan performa lonjakan. Butuh izin tulis tambahan, jadi **pasang ulang aturan udev** setelah memperbarui aplikasi:
+```bash
+cd ~/Tubsamy-dev/Projects/my-project/legion-control
+sudo cp udev/99-legion-control.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+sudo udevadm trigger --action=bind --subsystem-match=platform
+sudo udevadm trigger --action=change --subsystem-match=cpu
+scripts/install.sh      # pasang versi terbaru aplikasinya
+```
+Verifikasi izin (semua `-rw-rw-r-- root plugdev`):
+```bash
+ls -l /sys/devices/system/cpu/cpufreq/boost /sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00/{cpu_longterm_powerlimit,cpu_shortterm_powerlimit,fan_fullspeed}
+```
+- **Batas daya CPU**: hanya bisa DITURUNKAN dari nilai firmware (laptop ini: 70 W / 88 W di mode Performance), minimal 25 W / 30 W, dan jangka pendek tidak boleh lebih kecil dari jangka panjang. Alasannya: di model ini kernel menulis nilai langsung ke firmware tanpa memeriksa rentang, jadi aplikasi yang menjaganya. Untuk kembali ke nilai firmware: tombol **Kembalikan ke bawaan** (memuat ulang mode, termasuk kurva kipas).
+- **Turbo boost**: mati = CPU dibatasi ke clock dasar; paling efektif menurunkan suhu beban berat.
+- **Kipas penuh**: semua kipas maksimum; berisik.
+- Panel "Kenapa panas?" menampilkan governor dan preferensi energi; bila `performance`, ganti profil sistem ke **Seimbang** di halaman Perangkat untuk pemakaian harian.
+
 ### Pertahankan kurva kipas
 Firmware memuat kurva bawaan setiap kali mode daya berganti (Fn+Q) atau setelah reboot. Di halaman Kipas & suhu, aktifkan saklar **Pertahankan kurva ini**: kurva yang disimpan akan diterapkan ulang otomatis setiap kali Anda kembali ke **mode tempat kurva itu disimpan** (Quiet/Balanced/Performance, sama dengan Fn+Q), selama aplikasi berjalan (aktifkan autostart agar jalan sejak login). Di mode lain aplikasi tidak menyentuh kurva, karena firmware punya kurva bawaan terpisah per mode.
 - Alur: ubah angka → **Terapkan** (kurva ikut tersimpan) → kurva tersimpan untuk mode yang sedang aktif.
@@ -115,6 +133,7 @@ Perintah `scripts/install.sh` tidak memakai sudo; aturan udev tetap dipasang man
 | `make` gagal: `/lib/modules/.../build` tidak ada | `sudo apt install --reinstall linux-headers-$(uname -r)` |
 | Kurva kembali ke default sendiri | Firmware memuat ulang kurva saat mode diganti (Fn+Q) atau terlalu lama; klik Terapkan lagi |
 | Tombol mode: `Invalid argument (os error 22)` | Versi lama aplikasi memakai penomoran mode yang salah (0 ditolak firmware). Perbarui ke versi terbaru; nilai benar: 1 Quiet, 2 Balanced, 3 Performance |
+| Daya & panas: "Gagal menulis batas daya ... Permission denied" | Aturan udev belum dipasang ulang (bagian Daya & panas) |
 | Kurva tidak bertahan setelah Fn+Q | Aktifkan "Pertahankan kurva ini" dan kembali ke mode tempat kurva disimpan; aplikasi harus berjalan |
 | Tombol Terapkan nonaktif | Kurva tidak lolos validasi (kecepatan turun saat suhu naik, atau titik terakhir <60% default); pesan merah menjelaskan |
 | Ikon tray tidak muncul di GNOME | Ekstensi AppIndicator belum terpasang/aktif, lihat bagian Tray icon |

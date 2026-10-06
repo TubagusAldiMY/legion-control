@@ -135,6 +135,38 @@ impl Legion {
         Ok(())
     }
 
+    /// Batas daya CPU (watt): jangka panjang (PL1, beban berkelanjutan) dan jangka pendek (PL2,
+    /// lonjakan). `None` bila firmware tidak mengekspos keduanya (nilai 0 / file hilang).
+    pub fn power_limits(&self) -> Option<PowerLimits> {
+        let get = |n: &str| Self::read_num(&self.sys, n).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0);
+        Some(PowerLimits { long_w: get("cpu_longterm_powerlimit")?, short_w: get("cpu_shortterm_powerlimit")? })
+    }
+
+    /// Tulis batas daya. Di model ini (model_v0) kernel menulis langsung ke firmware TANPA
+    /// membatasi rentang, jadi pemanggil wajib memvalidasi lewat [`validate_power`] dulu.
+    /// Urutan tulis menjaga syarat short >= long di tiap langkah: bila menurunkan, long dulu;
+    /// bila menaikkan, short dulu.
+    pub fn set_power_limits(&self, want: PowerLimits) -> io::Result<()> {
+        let cur = self.power_limits().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "batas daya tidak terbaca"))?;
+        let w = |name: &str, v: u32| fs::write(self.sys.join(name), v.to_string());
+        if want.long_w <= cur.long_w {
+            w("cpu_longterm_powerlimit", want.long_w)?;
+            w("cpu_shortterm_powerlimit", want.short_w)
+        } else {
+            w("cpu_shortterm_powerlimit", want.short_w)?;
+            w("cpu_longterm_powerlimit", want.long_w)
+        }
+    }
+
+    /// Kipas penuh (`fan_fullspeed`): `true` = semua kipas berputar maksimum.
+    pub fn fan_fullspeed(&self) -> io::Result<bool> {
+        Ok(Self::read(&self.sys, "fan_fullspeed")? != "0")
+    }
+
+    pub fn set_fan_fullspeed(&self, on: bool) -> io::Result<()> {
+        fs::write(self.sys.join("fan_fullspeed"), if on { "1" } else { "0" })
+    }
+
     /// Mode daya Legion. Penomoran sysfs `powermode` (baca DAN tulis) = penomoran WMI, lihat
     /// [`MODES`]. Header dokumentasi modul ("0 balanced, 1 performance, 2 quiet") sudah usang:
     /// itu penomoran register EC internal, dan menulis `0` ditolak dengan EINVAL.
@@ -165,6 +197,34 @@ impl Legion {
     pub fn set_gsync(&self, hybrid: bool) -> io::Result<()> {
         fs::write(self.sys.join("gsync"), if hybrid { "1" } else { "0" })
     }
+}
+
+/// Batas daya CPU dalam watt.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PowerLimits {
+    pub long_w: u32,
+    pub short_w: u32,
+}
+
+/// Lantai yang aman dipakai sehari-hari; di bawah ini laptop terasa macet dan firmware bisa menolak.
+pub const MIN_LONG_W: u32 = 25;
+pub const MIN_SHORT_W: u32 = 30;
+
+/// Periksa batas daya sebelum ditulis. Aplikasi ini hanya boleh MENURUNKAN daya dari nilai
+/// firmware (`baseline`), tidak menaikkannya: di model ini kernel tidak memvalidasi rentang,
+/// dan daya berlebih bisa membuat pendinginan kewalahan. Syarat: lantai minimum, short >= long,
+/// dan tidak melebihi baseline.
+pub fn validate_power(want: PowerLimits, baseline: PowerLimits) -> Result<(), String> {
+    if want.long_w < MIN_LONG_W || want.short_w < MIN_SHORT_W {
+        return Err(format!("terlalu rendah: minimal {MIN_LONG_W} W (jangka panjang) dan {MIN_SHORT_W} W (jangka pendek)"));
+    }
+    if want.short_w < want.long_w {
+        return Err("batas jangka pendek tidak boleh lebih kecil dari jangka panjang".into());
+    }
+    if want.long_w > baseline.long_w || want.short_w > baseline.short_w {
+        return Err(format!("tidak boleh melebihi nilai firmware ({} W / {} W)", baseline.long_w, baseline.short_w));
+    }
+    Ok(())
 }
 
 /// Mode daya yang bisa dipilih user: (nilai sysfs, nama). Nilai ini cocok dengan
@@ -299,6 +359,9 @@ pub(crate) mod tests {
         fs::write(sys.join("powermode"), "2\n").unwrap();
         fs::write(sys.join("issupportgsync"), "1\n").unwrap();
         fs::write(sys.join("gsync"), "0\n").unwrap();
+        for (f, v) in [("cpu_longterm_powerlimit", "70"), ("cpu_shortterm_powerlimit", "88"), ("fan_fullspeed", "0")] {
+            fs::write(sys.join(f), format!("{v}\n")).unwrap();
+        }
         let l = Legion::detect_in(&[root.join("tidak-ada"), sys], &hw).expect("harus terdeteksi");
         (l, root)
     }
@@ -334,6 +397,51 @@ pub(crate) mod tests {
         l.set_curve(&c).unwrap();
         assert_eq!(l.curve().unwrap(), c);
         assert!(l.set_curve(&c[..2]).is_err());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// Sanity: batas daya terbaca/ditulis, urutan tulis menjaga short >= long, 0 = tidak didukung.
+    #[test]
+    fn power_limits_roundtrip() {
+        let (l, root) = fake("power");
+        assert_eq!(l.power_limits(), Some(PowerLimits { long_w: 70, short_w: 88 }));
+        l.set_power_limits(PowerLimits { long_w: 45, short_w: 54 }).unwrap(); // turun
+        assert_eq!(l.power_limits(), Some(PowerLimits { long_w: 45, short_w: 54 }));
+        l.set_power_limits(PowerLimits { long_w: 60, short_w: 80 }).unwrap(); // naik
+        assert_eq!(l.power_limits(), Some(PowerLimits { long_w: 60, short_w: 80 }));
+        fs::write(root.join("sys/cpu_longterm_powerlimit"), "0\n").unwrap();
+        assert_eq!(l.power_limits(), None, "nilai 0 = tidak didukung");
+        assert!(l.set_power_limits(PowerLimits { long_w: 40, short_w: 50 }).is_err());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// Edge: aturan keamanan batas daya (table-driven). Baseline = 70/88 W.
+    #[test]
+    fn validate_power_rules() {
+        let base = PowerLimits { long_w: 70, short_w: 88 };
+        let p = |l, s| PowerLimits { long_w: l, short_w: s };
+        let cases: [(&str, PowerLimits, bool); 8] = [
+            ("sama dengan firmware", p(70, 88), true),
+            ("diturunkan wajar", p(45, 54), true),
+            ("tepat di lantai", p(25, 30), true),
+            ("long di bawah lantai", p(20, 54), false),
+            ("short di bawah lantai", p(25, 29), false),
+            ("short lebih kecil dari long", p(50, 45), false),
+            ("long melebihi firmware", p(71, 88), false),
+            ("short melebihi firmware", p(70, 95), false),
+        ];
+        for (name, want, ok) in cases {
+            assert_eq!(validate_power(want, base).is_ok(), ok, "{name}");
+        }
+    }
+
+    /// Sanity: kipas penuh terbaca dan ditulis.
+    #[test]
+    fn fan_fullspeed_toggle() {
+        let (l, root) = fake("fullspeed");
+        assert!(!l.fan_fullspeed().unwrap());
+        l.set_fan_fullspeed(true).unwrap();
+        assert!(l.fan_fullspeed().unwrap());
         fs::remove_dir_all(root).ok();
     }
 
@@ -450,6 +558,9 @@ pub(crate) mod tests {
         }
         assert!(l.gsync_supported(), "gsync seharusnya didukung di 82JW");
         l.gsync().expect("gsync tidak terbaca");
+        let pl = l.power_limits().expect("batas daya CPU tidak terbaca");
+        assert!(pl.short_w >= pl.long_w, "short < long: {pl:?}");
+        l.fan_fullspeed().expect("fan_fullspeed tidak terbaca");
         // Titik aktif harus ketemu dan kecepatannya cocok dengan target firmware.
         let s = l.sensors();
         let (target, i) = {
